@@ -10,7 +10,7 @@
 - Node 22 + Express 5 + Mongoose 9 backend.
 - Originally JavaScript (CommonJS) → migrated to **TypeScript strict mode + ESM** (commit `af7d7ae`).
 - Git repository on branch `dev`; `main` is the integration branch.
-- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews) ✅, 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, student search (2.5 partial) ✅. Still open: CoachingCenter CRUD (2.2), Courses/assignments (2.3), center-review routes, full search.
+- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews) ✅, 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, student search (2.5 partial) ✅, student bookmarks ✅. Still open: CoachingCenter CRUD (2.2), Courses/assignments (2.3), center-review routes, full search.
 
 ---
 
@@ -32,6 +32,7 @@ Coaching-app/
 │   │   ├── admins.controller.ts       # self
 │   │   ├── subjects.controller.ts     # public list + GET /api/subjects/:id
 │   │   ├── search.controller.ts       # student search: teachers + centers
+│   │   ├── bookmarks.controller.ts    # student bookmarks: create/list/delete
 │   │   └── admin/                     # /api/admin/* moderation surface
 │   │       ├── owners.admin.controller.ts
 │   │       ├── teachers.admin.controller.ts
@@ -45,7 +46,8 @@ Coaching-app/
 │   │   ├── students.schemas.ts
 │   │   ├── admins.schemas.ts
 │   │   ├── subjects.schemas.ts
-│   │   └── search.schemas.ts          # teacher/center search query schemas (geo pair refine)
+│   │   ├── search.schemas.ts          # teacher/center search query schemas (geo pair refine)
+│   │   └── bookmarks.schemas.ts       # bookmark create + list-query (target-type enum)
 │   ├── lib/
 │   │   ├── auth/
 │   │   │   ├── passwordHook.ts        # bcrypt pre-save + comparePassword
@@ -73,6 +75,7 @@ Coaching-app/
 │   │   ├── Admin.ts
 │   │   ├── CoachingCenter.ts          # owner ref → 'Owner'
 │   │   ├── CoachingCenterReview.ts    # student→center rating (was Review.ts; collection pinned 'reviews')
+│   │   ├── StudentBookmark.ts         # polymorphic refPath: student saves Teacher/Webinar/CoachingCenter
 │   │   ├── Enquiry.ts                 # student ref → 'Student'
 │   │   ├── Owner.ts
 │   │   ├── Student.ts
@@ -279,6 +282,16 @@ Coaching-app/
 - **Files**: new `src/schemas/subjects.schemas.ts`, `src/controllers/subjects.controller.ts` (public), `src/controllers/admin/subjects.admin.controller.ts` (admin); edited `src/routes/admin.routes.ts` (+`/subjects` block), new `src/routes/subjects.routes.ts`, mounted `/api/subjects` in `src/app.ts`. No model change (`Subject` already existed).
 - **Verified end-to-end** (live Docker stack): create → `201` + auto-slug `mathematics`; duplicate name → `409`; unknown key (`slug`) → `400` via `.strict()`; public list/get → `200`; after admin `isActive=false` PATCH, public get → `404` while admin `?isActive=false` list still returns it; write with no token → `401`. `tsc --noEmit` clean.
 
+### Student bookmarks — save Teachers / Webinars / Coaching Centers (shipped)
+- **One polymorphic model** `StudentBookmark` (`src/models/StudentBookmark.ts`) — `{ student→Student, targetType ('Teacher'|'Webinar'|'CoachingCenter'), target }` where `target` uses Mongoose **`refPath: 'targetType'`** to resolve to the right collection on populate (first `refPath` use in the repo). Unique index `(student, targetType, target)` → idempotent saves; secondary `(student, createdAt)` for listing.
+- **Student-only API** (`protect` + `requireRole('student')`), mounted on the existing students router:
+  - `POST /api/students/bookmarks` — body `{ targetType, targetId }`. Verifies the target exists & `isActive` (404 otherwise), 409 on duplicate (E11000). → `201 { success, bookmark }`.
+  - `GET /api/students/bookmarks` — caller's bookmarks, newest-first, `?targetType=&page=&limit=`. `target` populated via a **union allow-list `select`** (covers all three types, deliberately omits teacher/center `email`/`phone`). → `{ success, data, pagination }`.
+  - `DELETE /api/students/bookmarks/:id` — ownership-checked (403 on others'), 404 if missing. → `204`.
+- **Files**: new `src/models/StudentBookmark.ts`, `src/schemas/bookmarks.schemas.ts`, `src/controllers/bookmarks.controller.ts`; edited `src/routes/students.routes.ts` (+`/bookmarks` block). No `app.ts` change (students router already mounted).
+- **Out of scope** (not requested): unsave-by-target toggle, `isBookmarked` check endpoint, cascade-cleanup when a target is later deleted (a dangling bookmark just populates `target: null`).
+- **Verified end-to-end** (live Docker stack): no-token → `401`, teacher token → `403`; create teacher + webinar bookmark → `201`; duplicate → `409`; nonexistent target → `404`; invalid `targetType` enum + unknown key → `400`; list returns both with `target` populated and **no email/phone leak**; `?targetType=` filter works; delete by id → `204`, repeat → `404`; a second student deleting the first's bookmark → `403`. `tsc --noEmit` clean.
+
 ### Phase 2.5 (partial) — Student search for Teachers & Centers (shipped)
 - **Surface**: **student-only** (`protect` + `requireRole('student')`) dedicated router — `GET /api/search/teachers` and `GET /api/search/centers`. Built ahead of the full CoachingCenter CRUD (Phase 2.2 still pending) without depending on it.
 - **Filters** (shared, validated by Zod `.strict()` in `src/schemas/search.schemas.ts`): `q` (keyword), `subject` (id **or** name/slug), `city`, `board` (enum), `minRating`, `minFees`/`maxFees`, geo (`lat`+`lng`+`distanceKm`, default 10km), `page`/`limit`. Sort: `averageRating desc → totalReviews desc`. Always `isActive:true`.
@@ -376,6 +389,7 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | `reviews` | Center reviews by students (model renamed `Review`→`CoachingCenterReview`; collection name pinned) |
 | `teacherreviews` | Teacher reviews by students (new; denormalises rating onto Teacher) |
 | `webinars` | Teacher-hosted webinars (new; powers dashboard "upcoming webinars") |
+| `studentbookmarks` | Student-saved Teacher/Webinar/CoachingCenter (new; polymorphic `refPath`) |
 | `enquiries` | Student enquiries to centers (Phase 1, ref flipped to Student) |
 
 ### Key indexes
@@ -486,6 +500,9 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | PATCH | `/api/admin/subjects/:id` | Bearer (admin) | Update `name`/`category`/`description`/`isActive`. 409 on duplicate name. (No DELETE — hide via `isActive`.) |
 | GET | `/api/search/teachers` | Bearer (student) | Search active teachers. Filters: `q`, `subject` (id or name), `city`, `board`, `minRating`, `minFees`/`maxFees`, geo (`lat`+`lng`+`distanceKm`), pagination. Public-safe projection. |
 | GET | `/api/search/centers` | Bearer (student) | Search active coaching centers — same filter set against `subjectsOffered`/`fees.*`. |
+| POST | `/api/students/bookmarks` | Bearer (student) | Save a Teacher/Webinar/CoachingCenter. Body `{targetType, targetId}`. 404 missing/inactive, 409 duplicate. |
+| GET | `/api/students/bookmarks` | Bearer (student) | List caller's bookmarks (newest-first, `?targetType=` filter). `target` populated, public-safe. |
+| DELETE | `/api/students/bookmarks/:id` | Bearer (student) | Delete own bookmark by id. 403 on others', 404 if missing. 204. |
 
 Endpoints still pending from Phase 2 (centers CRUD, courses, center-reviews API) — see section 11.
 
@@ -553,6 +570,7 @@ Endpoints still pending from Phase 2 (centers CRUD, courses, center-reviews API)
 - **Cross-collection email race** — two concurrent registrations of the same email into different collections can both succeed. Tolerable for Phase 2; will need transactions in Phase 3.
 - **Orphaned invites** — if an owner invites a teacher by email and that email later registers as Student/Owner/Admin, the invite never auto-resolves (only Teacher signup triggers the hook).
 - **`Admin.permissions` not enforced** — stored but every admin currently has full access.
+- **Dangling `StudentBookmark`s** — bookmarks aren't cascade-cleaned when their target (Teacher/Webinar/CoachingCenter) is deleted; a stale bookmark populates `target: null` on list. Needs a cleanup hook or a null-target filter once hard-deletes land.
 - **Git push to `main` blocked** — local commit `af7d7ae` exists, but the remote rejects pushes from `weloin-subhadip` (repo is owned by `weloin-soumyadip`). Either get added as collaborator or push from the owner's credentials.
 
 ---
