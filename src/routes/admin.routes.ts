@@ -21,11 +21,17 @@ import {
   adminListQuerySchema,
   createAdminSchema,
 } from '../schemas/admins.schemas.js';
+import {
+  subjectCreateSchema,
+  subjectAdminPatchSchema,
+  adminSubjectListQuerySchema,
+} from '../schemas/subjects.schemas.js';
 
 import * as owners from '../controllers/admin/owners.admin.controller.js';
 import * as teachers from '../controllers/admin/teachers.admin.controller.js';
 import * as students from '../controllers/admin/students.admin.controller.js';
 import * as admins from '../controllers/admin/admins.admin.controller.js';
+import * as subjects from '../controllers/admin/subjects.admin.controller.js';
 
 const router = Router();
 
@@ -111,6 +117,17 @@ router.patch(
   '/admins/:id/activate',
   validate(idParamSchema, 'params'),
   asyncHandler(admins.activate),
+);
+
+// ─── Subjects ──────────────────────────────────────────────────────
+router.get('/subjects', validate(adminSubjectListQuerySchema, 'query'), asyncHandler(subjects.list));
+router.post('/subjects', validate(subjectCreateSchema), asyncHandler(subjects.create));
+router.get('/subjects/:id', validate(idParamSchema, 'params'), asyncHandler(subjects.getById));
+router.patch(
+  '/subjects/:id',
+  validate(idParamSchema, 'params'),
+  validate(subjectAdminPatchSchema),
+  asyncHandler(subjects.update),
 );
 
 export default router;

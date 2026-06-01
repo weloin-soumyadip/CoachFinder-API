@@ -10,7 +10,7 @@
 - Node 22 + Express 5 + Mongoose 9 backend.
 - Originally JavaScript (CommonJS) → migrated to **TypeScript strict mode + ESM** (commit `af7d7ae`).
 - Git repository on branch `dev`; `main` is the integration branch.
-- Phase 1 (scaffolding) is shipped; Phase 2 is in progress (sub-phase 2.1 complete).
+- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews) ✅, 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, student search (2.5 partial) ✅. Still open: CoachingCenter CRUD (2.2), Courses/assignments (2.3), center-review routes, full search.
 
 ---
 
@@ -30,17 +30,22 @@ Coaching-app/
 │   │   ├── teachers.controller.ts     # self + public GET /api/teachers/:id
 │   │   ├── students.controller.ts     # self
 │   │   ├── admins.controller.ts       # self
+│   │   ├── subjects.controller.ts     # public list + GET /api/subjects/:id
+│   │   ├── search.controller.ts       # student search: teachers + centers
 │   │   └── admin/                     # /api/admin/* moderation surface
 │   │       ├── owners.admin.controller.ts
 │   │       ├── teachers.admin.controller.ts
 │   │       ├── students.admin.controller.ts
-│   │       └── admins.admin.controller.ts
+│   │       ├── admins.admin.controller.ts
+│   │       └── subjects.admin.controller.ts
 │   ├── schemas/                       # Zod request schemas
 │   │   ├── common.ts                  # objectId, location, pagination, password-change
 │   │   ├── owners.schemas.ts
 │   │   ├── teachers.schemas.ts
 │   │   ├── students.schemas.ts
-│   │   └── admins.schemas.ts
+│   │   ├── admins.schemas.ts
+│   │   ├── subjects.schemas.ts
+│   │   └── search.schemas.ts          # teacher/center search query schemas (geo pair refine)
 │   ├── lib/
 │   │   ├── auth/
 │   │   │   ├── passwordHook.ts        # bcrypt pre-save + comparePassword
@@ -51,7 +56,9 @@ Coaching-app/
 │   │   │   └── emailUniqueness.ts     # cross-collection email check + EmailConflictError (generic 409, no role leak)
 │   │   ├── authz/                     # (empty — Phase 2.3)
 │   │   ├── crud/                      # CRUD helpers
-│   │   │   ├── projectTeacherPublic.ts  # public-safe projection
+│   │   │   ├── projectTeacherPublic.ts  # public-safe teacher projection
+│   │   │   ├── projectCenterPublic.ts   # public-safe center projection (search results)
+│   │   │   ├── resolveSubjectIds.ts     # subject id-or-name/slug → Subject ObjectIds
 │   │   │   └── escapeRegex.ts         # safe text-search regex escaping
 │   │   ├── logger.ts                  # pino singleton + httpLogger (pino-http)
 │   │   └── redis.ts                   # ioredis singleton + connect/disconnect
@@ -79,7 +86,9 @@ Coaching-app/
 │   │   ├── teachers.routes.ts         # /api/teachers/{me, :id}
 │   │   ├── students.routes.ts         # /api/students/me
 │   │   ├── admins.routes.ts           # /api/admins/me
-│   │   ├── admin.routes.ts            # /api/admin/* moderation
+│   │   ├── subjects.routes.ts         # /api/subjects (public list + :id)
+│   │   ├── search.routes.ts           # /api/search/{teachers,centers} (student-only)
+│   │   ├── admin.routes.ts            # /api/admin/* moderation (+ /subjects writes)
 │   │   └── health.routes.ts           # /api/health
 │   ├── scripts/
 │   │   └── seedAdmin.ts               # bootstrap first admin
@@ -260,6 +269,26 @@ Coaching-app/
 - **Teacher-review API** — public `GET /api/teachers/:id/reviews` (paginated, `student` populated); student-authored `POST /api/teachers/:id/reviews` (404 if teacher missing/inactive, 409 on duplicate); author-only `PATCH`/`DELETE /api/teacher-reviews/:id` (sets `isEdited`, recalcs on every write).
 - **`Review` → `CoachingCenterReview` rename** — `src/models/Review.ts` renamed (via `git mv`) to `src/models/CoachingCenterReview.ts`; registered model name, exported var, and `*Attrs/*Doc/*Model` types all renamed. **Collection pinned to `'reviews'`** so existing documents aren't orphaned. Now symmetric with `TeacherReview` (center reviews still live in `reviews`; teacher reviews in `teacherreviews`).
 - **Verified end-to-end** (live Docker stack): dashboard returns 5/≤3/≤3 sections with no PII leak; no-token→401, non-student→403; webinar CRUD 201/200/403/400/204/404 with owner guard + `.strict()` rejection; teacher-review create→`{avg:3,n:2}`, edit→`{avg:1.5,n:2}`, delete→`{avg:2,n:1}` denormalised onto Teacher and reflected on the dashboard; webinar ranking surfaces the highest-`totalReviews` hosts' webinars first (`[4,3,2]` top-3). `tsc --noEmit` clean throughout.
+
+### Phase 2.2 (partial) — Subject CRUD: public reads + admin writes (shipped)
+- **Surface**: public reads, admin-only writes, **no delete** (hide via `isActive` toggle instead).
+  - Public (`/api/subjects`): `GET /` (list, active only, pagination + `q`/`category` filters) and `GET /:id` (active only; 404 if missing or `isActive=false` so deactivated subjects don't leak).
+  - Admin (`/api/admin/subjects`, `protect` + `requireRole('admin')`): `GET /` (lists **all** incl. inactive, adds `isActive` filter — so admins can find/reactivate hidden subjects the public list omits), `GET /:id`, `POST /` (create), `PATCH /:id` (update incl. `isActive`).
+- **Schemas** (`src/schemas/subjects.schemas.ts`) — `.strict()` create/patch/list query schemas. `slug` is intentionally **absent** from every request schema (auto-derived by the model's `pre('validate')` hook), so clients can't set/forge it.
+- **Duplicate handling** — `name` (+ derived `slug`) are unique; create/update catch Mongo `E11000` locally and reshape to `409 'Subject already exists'` (the global handler's E11000 reshape only covers the `email` index).
+- **Files**: new `src/schemas/subjects.schemas.ts`, `src/controllers/subjects.controller.ts` (public), `src/controllers/admin/subjects.admin.controller.ts` (admin); edited `src/routes/admin.routes.ts` (+`/subjects` block), new `src/routes/subjects.routes.ts`, mounted `/api/subjects` in `src/app.ts`. No model change (`Subject` already existed).
+- **Verified end-to-end** (live Docker stack): create → `201` + auto-slug `mathematics`; duplicate name → `409`; unknown key (`slug`) → `400` via `.strict()`; public list/get → `200`; after admin `isActive=false` PATCH, public get → `404` while admin `?isActive=false` list still returns it; write with no token → `401`. `tsc --noEmit` clean.
+
+### Phase 2.5 (partial) — Student search for Teachers & Centers (shipped)
+- **Surface**: **student-only** (`protect` + `requireRole('student')`) dedicated router — `GET /api/search/teachers` and `GET /api/search/centers`. Built ahead of the full CoachingCenter CRUD (Phase 2.2 still pending) without depending on it.
+- **Filters** (shared, validated by Zod `.strict()` in `src/schemas/search.schemas.ts`): `q` (keyword), `subject` (id **or** name/slug), `city`, `board` (enum), `minRating`, `minFees`/`maxFees`, geo (`lat`+`lng`+`distanceKm`, default 10km), `page`/`limit`. Sort: `averageRating desc → totalReviews desc`. Always `isActive:true`.
+- **Keyword search uses regex `$or`** (teacher: `name`/`bio`/`description`; center: `name`/`description`/`area`), **not `$text`** — because Mongo can't combine `$text` with geo, and regex composes with every other filter.
+- **Geo uses `$geoWithin: { $centerSphere: [[lng,lat], km/6378.1] }`**, **not `$near`** — `$near` is disallowed in `countDocuments` and forces a distance sort; `$geoWithin` works with pagination + count and leaves the rating sort intact. Both models already carry a `2dsphere` index on `location`. `lat`/`lng` must be supplied together (Zod refine → 400 otherwise).
+- **Subject by name** — `resolveSubjectIds(subject)` (`src/lib/crud/resolveSubjectIds.ts`) accepts an ObjectId (used directly) or human text (resolved via `Subject` name/slug regex → ids); matches `Teacher.subjects` / `CoachingCenter.subjectsOffered` via `$in`. Unknown subject → empty result set (not an error).
+- **Fees overlap** — `maxFees` → `feesRange.min/fees.min ≤ maxFees`; `minFees` → `feesRange.max/fees.max ≥ minFees`.
+- **Public-safe output** — teachers via existing `projectTeacherPublic` (no email/phone); centers via new `projectCenterPublic` (allow-list; contact info **is** public since centers are business listings, but `owner`/`isActive`/`__v` are hidden). Both populate subjects (`name`,`slug`) for display.
+- **Files**: new `src/schemas/search.schemas.ts`, `src/controllers/search.controller.ts`, `src/routes/search.routes.ts`, `src/lib/crud/resolveSubjectIds.ts`, `src/lib/crud/projectCenterPublic.ts`; mounted `/api/search` in `src/app.ts`. No model changes.
+- **Verified end-to-end** (live Docker stack): no-token → `401`, admin token → `403`; keyword search returns results with `{success,data,pagination}` envelope and **no email/phone leak**; `subject=Mathematics` (by name) and `subject=<id>` both match a teacher with that subject (populated `{name,slug}`); `city=Kolkata&maxFees=600` → match, `maxFees=400` (below teacher's min 500) → 0; geo query → `200`; `lat` without `lng` → `400`; unknown subject → `0` results; unknown query key + invalid `board` enum → `400`. `tsc --noEmit` clean.
 
 ### Phase 2.1.1 — Generic email-conflict response (shipped)
 - **Why**: the previous `"Email already registered as <role>"` message was a textbook account-enumeration oracle — an attacker could probe an email and learn which role owns it. Requirement: every role collection (Owner / Teacher / Student / Admin) must still be checked, but the public response must be byte-identical no matter which role matches.
@@ -449,8 +478,16 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | POST | `/api/teachers/:id/reviews` | Bearer (student) | Review a teacher. 404 if teacher missing/inactive, 409 on duplicate. Recalcs Teacher rating. |
 | PATCH | `/api/teacher-reviews/:id` | Bearer (student) | Author-only edit (sets `isEdited`, recalcs rating). |
 | DELETE | `/api/teacher-reviews/:id` | Bearer (student) | Author-only delete (recalcs rating). 204. |
+| GET | `/api/subjects` | **public** | List **active** subjects + pagination + filters (`q`, `category`). |
+| GET | `/api/subjects/:id` | **public** | Single active subject. 404 if missing or `!isActive`. 400 on bad ObjectId. |
+| GET | `/api/admin/subjects` | Bearer (admin) | List **all** subjects (incl. inactive) + filters (`q`, `category`, `isActive`). |
+| GET | `/api/admin/subjects/:id` | Bearer (admin) | Single subject, any state. |
+| POST | `/api/admin/subjects` | Bearer (admin) | Create. `slug` auto-derived; `.strict()`. 409 on duplicate name. |
+| PATCH | `/api/admin/subjects/:id` | Bearer (admin) | Update `name`/`category`/`description`/`isActive`. 409 on duplicate name. (No DELETE — hide via `isActive`.) |
+| GET | `/api/search/teachers` | Bearer (student) | Search active teachers. Filters: `q`, `subject` (id or name), `city`, `board`, `minRating`, `minFees`/`maxFees`, geo (`lat`+`lng`+`distanceKm`), pagination. Public-safe projection. |
+| GET | `/api/search/centers` | Bearer (student) | Search active coaching centers — same filter set against `subjectsOffered`/`fees.*`. |
 
-Endpoints still pending from Phase 2 (centers, courses, center-reviews API, search) — see section 11.
+Endpoints still pending from Phase 2 (centers CRUD, courses, center-reviews API) — see section 11.
 
 ---
 
@@ -462,10 +499,11 @@ Endpoints still pending from Phase 2 (centers, courses, center-reviews API, sear
 
 ## 11. Pending tasks
 
-### Phase 2.2 — CoachingCenter CRUD + Subjects (next up)
-- Controllers + routes for centers (`POST/GET/PATCH/DELETE /api/centers`, soft delete)
-- Public subject list + admin subject CRUD
-- `seedSubjects.ts` for canonical subject fixture
+### Phase 2.2 — CoachingCenter CRUD + Subjects (in progress)
+- Controllers + routes for centers (`POST/GET/PATCH/DELETE /api/centers`, soft delete) — **pending**
+- ✅ Public subject list/get + admin subject create/update (`/api/subjects` + `/api/admin/subjects`) — see section 5 "Subject CRUD". No delete (hide via `isActive`).
+- `seedSubjects.ts` for canonical subject fixture — **pending**
+- Still pending: wire subjects into teacher/center references (subject selection on profiles/search)
 
 ### Phase 2.3 — Course + TeacherCenterAssignment
 - New models: `Course`, `TeacherCenterAssignment`
@@ -480,10 +518,11 @@ Endpoints still pending from Phase 2 (centers, courses, center-reviews API, sear
 - Still pending: wire student-authored **center** reviews via the `CoachingCenterReview` model (model + hooks exist, but no HTTP routes yet)
 - ADR-0005 (cross-collection email race) + ADR-0006 (teacher rating denormalisation) — pending write
 
-### Phase 2.5 — Search
-- Center search filters (`q`, `subject`, `city`, `area`, `board`, `minRating`, `minFees/maxFees`, `lat/lng/distanceKm`)
-- Teacher search (own location, subjects, fees range, rating, board)
-- Course search (subject, center, fees)
+### Phase 2.5 — Search (in progress)
+- ✅ Teacher search (`q`, `subject` id/name, `city`, `board`, `minRating`, `minFees/maxFees`, `lat/lng/distanceKm`) — `GET /api/search/teachers` (student-only). See section 5 "Student search".
+- ✅ Center search (same filter set) — `GET /api/search/centers` (student-only).
+- Still pending: `area` filter on center search; Course search (subject, center, fees) — needs Phase 2.3 Course model.
+- Note: keyword search is regex-based (composes with geo); relevance scoring / `$text` ranking left for a follow-up if needed.
 
 ### Phase 2.6 — Admin panel
 **User/role moderation shipped** (see section 8 "Full CRUD"). Still pending:
