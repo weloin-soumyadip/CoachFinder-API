@@ -42,6 +42,17 @@ export const centerSearchQuerySchema = z
   .refine(geoPairRefine, geoPairMessage);
 export type CenterSearchQuery = z.infer<typeof centerSearchQuerySchema>;
 
+// Combined feed — used when no `searchType` is sent. Only keyword + pagination,
+// since the three entity types have incompatible filter sets. `.strict()` so any
+// type-specific filter (city/subject/etc.) is rejected rather than silently ignored.
+export const combinedSearchQuerySchema = z
+  .object({
+    ...paginationFields,
+    q: z.string().trim().min(1).optional(),
+  })
+  .strict();
+export type CombinedSearchQuery = z.infer<typeof combinedSearchQuerySchema>;
+
 // Webinars don't carry subject/city/fees/geo/rating — they're keyword + status
 // driven. `q` matches the title/description; `upcoming` keeps only future ones.
 export const webinarSearchQuerySchema = z
