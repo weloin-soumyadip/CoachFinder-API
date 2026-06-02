@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist",
     "seed:admin": "tsx src/scripts/seedAdmin.ts",
-    "seed:webinars": "tsx src/scripts/seedWebinars.ts"
+    "seed:webinars": "tsx src/scripts/seedWebinars.ts",
+    "seed:demo": "tsx src/scripts/seedDemo.ts"
   },
   "keywords": [
     "tuition",

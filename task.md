@@ -162,6 +162,7 @@ Coaching-app/
 - `clean`        — `rm -rf dist`
 - `seed:admin`   — `tsx src/scripts/seedAdmin.ts`
 - `seed:webinars`— `tsx src/scripts/seedWebinars.ts`
+- `seed:demo`    — `tsx src/scripts/seedDemo.ts` *(full demo dataset — wipe & reseed all collections; every API returns real data)*
 
 ### `src/config/index.ts`
 - Reads `NODE_ENV`, `PORT`, `MONGO_URI`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `CORS_ORIGIN` from env.
@@ -403,6 +404,13 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 - `teachers`: text on `name/bio/description`; `subjects`; `(feesRange.min, feesRange.max)`; descending `averageRating`; sparse `2dsphere` on `location`; compound on `(city, isActive, isVerified)`.
 - `students`: sparse `2dsphere` on `location`; `city`.
 - All four role collections: `email` unique-per-collection.
+
+### Demo data (`npm run seed:demo`)
+- **`src/scripts/seedDemo.ts`** — one command that **wipes** all 11 collections and inserts a fresh, fully-linked demo dataset so **every API returns real data**: 12 subjects, 1 admin, 4 owners, 8 teachers, 10 students, 5 centers, 10 webinars, 24 teacher reviews, 15 center reviews, 15 bookmarks, 8 enquiries.
+- Built via `new Model({...}).save()` (fires bcrypt + slug + rating-recalc hooks; sidesteps Mongoose v9's array-`create` typing). Subjects/centers omit `slug` (auto). Reviews created after teachers/centers so denormalised `averageRating`/`totalReviews` populate. Geo uses `[lng,lat]` across Kolkata/Mumbai/Delhi/Bangalore.
+- **All demo accounts share password `Password123`**: `admin@demo.com`, `owner1..4@demo.com`, `teacher1..8@demo.com`, `student1..10@demo.com`.
+- Run inside the Docker app container (so it uses the compose Mongo URI): `docker compose exec app npm run seed:demo`.
+- **Verified**: dashboard 5/3/2 sections; search totals teacher 8 / coaching 5 / webinar 10 / combined 23; teacher ratings denormalised to 2.0–4.0; public subjects 12 / webinars 10; admin teacher list 8; reviews/bookmarks populated. `tsc --noEmit` clean.
 
 ---
 
