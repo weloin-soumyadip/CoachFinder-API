@@ -90,7 +90,7 @@ Coaching-app/
 │   │   ├── students.routes.ts         # /api/students/me
 │   │   ├── admins.routes.ts           # /api/admins/me
 │   │   ├── subjects.routes.ts         # /api/subjects (public list + :id)
-│   │   ├── search.routes.ts           # /api/search/{teachers,centers} (student-only)
+│   │   ├── search.routes.ts           # /api/search?searchType=teacher|coaching|webinar (student-only)
 │   │   ├── admin.routes.ts            # /api/admin/* moderation (+ /subjects writes)
 │   │   └── health.routes.ts           # /api/health
 │   ├── scripts/
@@ -292,16 +292,18 @@ Coaching-app/
 - **Out of scope** (not requested): unsave-by-target toggle, `isBookmarked` check endpoint, cascade-cleanup when a target is later deleted (a dangling bookmark just populates `target: null`).
 - **Verified end-to-end** (live Docker stack): no-token → `401`, teacher token → `403`; create teacher + webinar bookmark → `201`; duplicate → `409`; nonexistent target → `404`; invalid `targetType` enum + unknown key → `400`; list returns both with `target` populated and **no email/phone leak**; `?targetType=` filter works; delete by id → `204`, repeat → `404`; a second student deleting the first's bookmark → `403`. `tsc --noEmit` clean.
 
-### Phase 2.5 (partial) — Student search for Teachers & Centers (shipped)
-- **Surface**: **student-only** (`protect` + `requireRole('student')`) dedicated router — `GET /api/search/teachers` and `GET /api/search/centers`. Built ahead of the full CoachingCenter CRUD (Phase 2.2 still pending) without depending on it.
+### Phase 2.5 (partial) — Student search for Teachers, Centers & Webinars (shipped)
+- **Surface**: **student-only** (`protect` + `requireRole('student')`) — a single unified endpoint `GET /api/search?searchType=teacher|coaching|webinar`. Built ahead of the full CoachingCenter CRUD (Phase 2.2 still pending) without depending on it.
+- **`searchType` dispatch** — a required `searchType` query param picks the entity (validated **first**; unknown/missing → `400 "searchType must be one of: teacher, coaching, webinar"`). Then the query is parsed against the matching per-type Zod schema and routed to the right handler. **Manual dispatch, not `z.discriminatedUnion`** — the teacher/center schemas carry a `.refine()` (geo-pair rule) so they're `ZodEffects`, which a discriminated union can't take as branches. The error-reshape logic was extracted from the `validate` middleware into a shared `parseOrThrow(schema, data, source)` so the unified controller emits byte-identical `400`s. The old `/api/search/teachers` + `/api/search/centers` sub-routes were **retired** (logic folded into the run-* helpers).
+- **Webinar search (new)** — `searchType=webinar`: `q` (regex on `title`/`description`), `status` (enum), `upcoming` (`scheduledAt ≥ now`), `teacher` (id). Sorted `scheduledAt` asc (soonest first), `isActive:true`, teacher populated (`name`,`profileImage`). Public projection extracted to `src/lib/crud/projectWebinarPublic.ts` (shared with the webinars list/detail controller).
 - **Filters** (shared, validated by Zod `.strict()` in `src/schemas/search.schemas.ts`): `q` (keyword), `subject` (id **or** name/slug), `city`, `board` (enum), `minRating`, `minFees`/`maxFees`, geo (`lat`+`lng`+`distanceKm`, default 10km), `page`/`limit`. Sort: `averageRating desc → totalReviews desc`. Always `isActive:true`.
 - **Keyword search uses regex `$or`** (teacher: `name`/`bio`/`description`; center: `name`/`description`/`area`), **not `$text`** — because Mongo can't combine `$text` with geo, and regex composes with every other filter.
 - **Geo uses `$geoWithin: { $centerSphere: [[lng,lat], km/6378.1] }`**, **not `$near`** — `$near` is disallowed in `countDocuments` and forces a distance sort; `$geoWithin` works with pagination + count and leaves the rating sort intact. Both models already carry a `2dsphere` index on `location`. `lat`/`lng` must be supplied together (Zod refine → 400 otherwise).
 - **Subject by name** — `resolveSubjectIds(subject)` (`src/lib/crud/resolveSubjectIds.ts`) accepts an ObjectId (used directly) or human text (resolved via `Subject` name/slug regex → ids); matches `Teacher.subjects` / `CoachingCenter.subjectsOffered` via `$in`. Unknown subject → empty result set (not an error).
 - **Fees overlap** — `maxFees` → `feesRange.min/fees.min ≤ maxFees`; `minFees` → `feesRange.max/fees.max ≥ minFees`.
 - **Public-safe output** — teachers via existing `projectTeacherPublic` (no email/phone); centers via new `projectCenterPublic` (allow-list; contact info **is** public since centers are business listings, but `owner`/`isActive`/`__v` are hidden). Both populate subjects (`name`,`slug`) for display.
-- **Files**: new `src/schemas/search.schemas.ts`, `src/controllers/search.controller.ts`, `src/routes/search.routes.ts`, `src/lib/crud/resolveSubjectIds.ts`, `src/lib/crud/projectCenterPublic.ts`; mounted `/api/search` in `src/app.ts`. No model changes.
-- **Verified end-to-end** (live Docker stack): no-token → `401`, admin token → `403`; keyword search returns results with `{success,data,pagination}` envelope and **no email/phone leak**; `subject=Mathematics` (by name) and `subject=<id>` both match a teacher with that subject (populated `{name,slug}`); `city=Kolkata&maxFees=600` → match, `maxFees=400` (below teacher's min 500) → 0; geo query → `200`; `lat` without `lng` → `400`; unknown subject → `0` results; unknown query key + invalid `board` enum → `400`. `tsc --noEmit` clean.
+- **Files**: `src/schemas/search.schemas.ts` (+`searchType` literals, `webinarSearchQuerySchema`, `SEARCH_TYPES`), `src/controllers/search.controller.ts` (run-teacher/center/webinar helpers + `search` dispatcher), `src/routes/search.routes.ts` (single `GET /`), `src/lib/crud/resolveSubjectIds.ts`, `src/lib/crud/projectCenterPublic.ts`, new `src/lib/crud/projectWebinarPublic.ts`, `src/middleware/validate.ts` (+exported `parseOrThrow`); mounted `/api/search` in `src/app.ts`. No model changes.
+- **Verified end-to-end** (live Docker stack): missing/invalid `searchType` → `400` (generic "one of" message); `searchType=teacher` keyword search returns `{success,data,pagination}` with **no email/phone leak**, `lat` without `lng` → `400` (refine intact); `searchType=coaching` → `200`; `searchType=webinar&q=physics&status=scheduled&upcoming=true` returns the webinar with teacher populated `{name,profileImage}`; `searchType=webinar&subject=...` → `400` (`.strict()` rejects cross-type filter); no-token → `401`, teacher token → `403`; retired `/api/search/teachers` → `404`. `tsc --noEmit` clean.
 
 ### Phase 2.1.1 — Generic email-conflict response (shipped)
 - **Why**: the previous `"Email already registered as <role>"` message was a textbook account-enumeration oracle — an attacker could probe an email and learn which role owns it. Requirement: every role collection (Owner / Teacher / Student / Admin) must still be checked, but the public response must be byte-identical no matter which role matches.
@@ -498,8 +500,7 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | GET | `/api/admin/subjects/:id` | Bearer (admin) | Single subject, any state. |
 | POST | `/api/admin/subjects` | Bearer (admin) | Create. `slug` auto-derived; `.strict()`. 409 on duplicate name. |
 | PATCH | `/api/admin/subjects/:id` | Bearer (admin) | Update `name`/`category`/`description`/`isActive`. 409 on duplicate name. (No DELETE — hide via `isActive`.) |
-| GET | `/api/search/teachers` | Bearer (student) | Search active teachers. Filters: `q`, `subject` (id or name), `city`, `board`, `minRating`, `minFees`/`maxFees`, geo (`lat`+`lng`+`distanceKm`), pagination. Public-safe projection. |
-| GET | `/api/search/centers` | Bearer (student) | Search active coaching centers — same filter set against `subjectsOffered`/`fees.*`. |
+| GET | `/api/search` | Bearer (student) | **Unified search.** Required `searchType` ∈ `teacher\|coaching\|webinar` (else 400) dispatches to one entity. `teacher`/`coaching` filters: `q`, `subject` (id or name), `city`, `board`, `minRating`, `minFees`/`maxFees`, geo (`lat`+`lng`+`distanceKm`), pagination — public-safe projection, sorted by rating. `webinar` filters: `q` (title/description), `status`, `upcoming`, `teacher` (id), pagination — sorted soonest-first, teacher populated. Wrong filter for the type → 400 (`.strict()`). |
 | POST | `/api/students/bookmarks` | Bearer (student) | Save a Teacher/Webinar/CoachingCenter. Body `{targetType, targetId}`. 404 missing/inactive, 409 duplicate. |
 | GET | `/api/students/bookmarks` | Bearer (student) | List caller's bookmarks (newest-first, `?targetType=` filter). `target` populated, public-safe. |
 | DELETE | `/api/students/bookmarks/:id` | Bearer (student) | Delete own bookmark by id. 403 on others', 404 if missing. 204. |
@@ -536,8 +537,10 @@ Endpoints still pending from Phase 2 (centers CRUD, courses, center-reviews API)
 - ADR-0005 (cross-collection email race) + ADR-0006 (teacher rating denormalisation) — pending write
 
 ### Phase 2.5 — Search (in progress)
-- ✅ Teacher search (`q`, `subject` id/name, `city`, `board`, `minRating`, `minFees/maxFees`, `lat/lng/distanceKm`) — `GET /api/search/teachers` (student-only). See section 5 "Student search".
-- ✅ Center search (same filter set) — `GET /api/search/centers` (student-only).
+- ✅ Unified student search `GET /api/search?searchType=teacher|coaching|webinar` (student-only). See section 5 "Student search".
+- ✅ Teacher search (`q`, `subject` id/name, `city`, `board`, `minRating`, `minFees/maxFees`, `lat/lng/distanceKm`).
+- ✅ Center search (same filter set, against `subjectsOffered`/`fees.*`).
+- ✅ Webinar search (`q`, `status`, `upcoming`, `teacher`).
 - Still pending: `area` filter on center search; Course search (subject, center, fees) — needs Phase 2.3 Course model.
 - Note: keyword search is regex-based (composes with geo); relevance scoring / `$text` ranking left for a follow-up if needed.
 

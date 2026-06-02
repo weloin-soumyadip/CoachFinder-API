@@ -1,7 +1,13 @@
 import { z } from 'zod';
-import { paginationFields } from './common.js';
+import { objectIdSchema, paginationFields } from './common.js';
 
 const BOARD_VALUES = ['CBSE', 'ICSE', 'State', 'IB', 'IGCSE', 'Other'] as const;
+const WEBINAR_STATUSES = ['scheduled', 'live', 'completed', 'cancelled'] as const;
+
+// Unified search dispatch values. The frontend sends `searchType` to pick the
+// entity to search; the dispatcher validates it before parsing the rest.
+export const SEARCH_TYPES = ['teacher', 'coaching', 'webinar'] as const;
+export type SearchType = (typeof SEARCH_TYPES)[number];
 
 // Shared search filters. `subject` accepts an ObjectId or human text (name/slug)
 // — resolved server-side. Geo fields are coerced from query strings; lat/lng
@@ -25,13 +31,30 @@ const geoPairRefine = (v: { lat?: number; lng?: number }): boolean =>
 const geoPairMessage = { message: 'lat and lng must be provided together', path: ['lat'] };
 
 export const teacherSearchQuerySchema = z
-  .object(searchQueryShape)
+  .object({ searchType: z.literal('teacher'), ...searchQueryShape })
   .strict()
   .refine(geoPairRefine, geoPairMessage);
 export type TeacherSearchQuery = z.infer<typeof teacherSearchQuerySchema>;
 
 export const centerSearchQuerySchema = z
-  .object(searchQueryShape)
+  .object({ searchType: z.literal('coaching'), ...searchQueryShape })
   .strict()
   .refine(geoPairRefine, geoPairMessage);
 export type CenterSearchQuery = z.infer<typeof centerSearchQuerySchema>;
+
+// Webinars don't carry subject/city/fees/geo/rating — they're keyword + status
+// driven. `q` matches the title/description; `upcoming` keeps only future ones.
+export const webinarSearchQuerySchema = z
+  .object({
+    searchType: z.literal('webinar'),
+    ...paginationFields,
+    q: z.string().trim().min(1).optional(),
+    status: z.enum(WEBINAR_STATUSES).optional(),
+    upcoming: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) => v === 'true'),
+    teacher: objectIdSchema.optional(),
+  })
+  .strict();
+export type WebinarSearchQuery = z.infer<typeof webinarSearchQuerySchema>;

@@ -6,34 +6,13 @@ import type {
   WebinarUpdate,
   WebinarListQuery,
 } from '../schemas/webinars.schemas.js';
+import { projectWebinarPublic } from '../lib/crud/projectWebinarPublic.js';
 
 function requireTeacher(req: Request) {
   if (!req.auth || req.auth.type !== 'teacher') {
     throw new ApiError(401, 'Not authenticated as teacher');
   }
   return req.auth.doc;
-}
-
-// Public-facing webinar shape. Allow-list so internal fields never leak.
-const PUBLIC_FIELDS = [
-  '_id',
-  'title',
-  'description',
-  'teacher',
-  'scheduledAt',
-  'durationMinutes',
-  'thumbnail',
-  'joinUrl',
-  'status',
-  'createdAt',
-] as const;
-
-function projectWebinarPublic(obj: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const key of PUBLIC_FIELDS) {
-    if (obj[key] !== undefined) out[key] = obj[key];
-  }
-  return out;
 }
 
 // POST /api/webinars — teacher authors a webinar they host.
