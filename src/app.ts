@@ -26,7 +26,24 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(
   cors({
-    origin: config.cors.origin.length ? config.cors.origin : '*',
+    // `credentials: true` (needed for the HttpOnly refresh cookie) forbids a
+    // wildcard `Access-Control-Allow-Origin`, so the allowed origin must be
+    // resolved per-request and echoed back verbatim — never `*`.
+    origin: (origin, callback) => {
+      // Non-browser clients (curl, mobile apps) send no Origin — always allow.
+      if (!origin) return callback(null, true);
+      // In non-production, allow any localhost / 127.0.0.1 origin since the
+      // Flutter web dev server binds to a random port each run.
+      if (
+        config.env !== 'production' &&
+        /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)
+      ) {
+        return callback(null, true);
+      }
+      // Otherwise honour the configured CORS_ORIGIN allowlist.
+      if (config.cors.origin.includes(origin)) return callback(null, true);
+      return callback(new Error(`Not allowed by CORS: ${origin}`));
+    },
     credentials: true,
   })
 );
