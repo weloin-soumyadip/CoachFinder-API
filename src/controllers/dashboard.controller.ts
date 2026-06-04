@@ -1,7 +1,17 @@
 import type { Request, Response } from 'express';
+import type { Types } from 'mongoose';
 import Teacher from '../models/Teacher.js';
 import CoachingCenter from '../models/CoachingCenter.js';
 import Webinar from '../models/Webinar.js';
+import ApiError from '../utils/ApiError.js';
+import {
+  getLast7DayWindow,
+  getProfileViewSeries,
+  getActiveStudentCount,
+  getWeeklyEnquiryCount,
+  getRecentEnquiries,
+} from '../lib/dashboard/ownerDashboard.queries.js';
+import type { OwnerDashboardData } from '../types/dashboard.js';
 // Side-effect import: registers the Subject schema so Teacher.populate('subjects')
 // works even though no Subject route is mounted yet (Phase 2.2).
 import '../models/Subject.js';
@@ -94,4 +104,39 @@ export async function getStudentDashboard(_req: Request, res: Response): Promise
     success: true,
     dashboard: { topTeachers, topCenters, upcomingWebinars },
   });
+}
+
+// GET /api/owners/dashboard — aggregated metrics for the calling owner's
+// coaching center (one owner = one center). Owner-only.
+export async function getOwnerDashboard(req: Request, res: Response): Promise<void> {
+  if (req.auth?.type !== 'owner') {
+    throw new ApiError(401, 'Not authenticated as owner');
+  }
+
+  const center = await CoachingCenter.findOne({ owner: req.auth.doc._id }).lean();
+  if (!center) {
+    throw new ApiError(404, 'No coaching center found for this owner');
+  }
+  const centerId = center._id as Types.ObjectId;
+
+  const window = getLast7DayWindow();
+  const [viewSeries, activeStudents, weeklyEnquiries, recentEnquiries] = await Promise.all([
+    getProfileViewSeries(centerId, window),
+    getActiveStudentCount(centerId),
+    getWeeklyEnquiryCount(centerId, window),
+    getRecentEnquiries(centerId),
+  ]);
+
+  const data: OwnerDashboardData = {
+    weeklyProfileViews: viewSeries.total,
+    weeklyEnquiries,
+    // Rating is already denormalised onto the center by the review hooks — reuse it.
+    averageRating: center.averageRating ?? 0,
+    totalReviews: center.totalReviews ?? 0,
+    activeStudents,
+    profileViewStats: viewSeries.stats,
+    recentEnquiries,
+  };
+
+  res.status(200).json({ success: true, data });
 }

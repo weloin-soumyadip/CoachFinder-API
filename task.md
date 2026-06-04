@@ -10,7 +10,7 @@
 - Node 22 + Express 5 + Mongoose 9 backend.
 - Originally JavaScript (CommonJS) → migrated to **TypeScript strict mode + ESM** (commit `af7d7ae`).
 - Git repository on branch `dev`; `main` is the integration branch.
-- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews) ✅, 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, student search (2.5 partial) ✅, student bookmarks ✅. Still open: CoachingCenter CRUD (2.2), Courses/assignments (2.3), center-review routes, full search.
+- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews) ✅, 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, student search (2.5 partial) ✅, student bookmarks ✅ (enriched response ✅), owner dashboard ✅. Still open: CoachingCenter CRUD (2.2), Courses/assignments (2.3), center-review routes, full search.
 
 ---
 
@@ -30,9 +30,10 @@ Coaching-app/
 │   │   ├── teachers.controller.ts     # self + public GET /api/teachers/:id
 │   │   ├── students.controller.ts     # self
 │   │   ├── admins.controller.ts       # self
+│   │   ├── dashboard.controller.ts    # student dashboard + owner-center dashboard
 │   │   ├── subjects.controller.ts     # public list + GET /api/subjects/:id
 │   │   ├── search.controller.ts       # student search: teachers + centers
-│   │   ├── bookmarks.controller.ts    # student bookmarks: create/list/delete
+│   │   ├── bookmarks.controller.ts    # student bookmarks: create/list/delete (enriched student+target response)
 │   │   └── admin/                     # /api/admin/* moderation surface
 │   │       ├── owners.admin.controller.ts
 │   │       ├── teachers.admin.controller.ts
@@ -58,10 +59,12 @@ Coaching-app/
 │   │   │   └── emailUniqueness.ts     # cross-collection email check + EmailConflictError (generic 409, no role leak)
 │   │   ├── authz/                     # (empty — Phase 2.3)
 │   │   ├── crud/                      # CRUD helpers
-│   │   │   ├── projectTeacherPublic.ts  # public-safe teacher projection
+│   │   │   ├── projectTeacherPublic.ts  # public-safe teacher projection (accepts doc OR lean obj)
 │   │   │   ├── projectCenterPublic.ts   # public-safe center projection (search results)
 │   │   │   ├── resolveSubjectIds.ts     # subject id-or-name/slug → Subject ObjectIds
 │   │   │   └── escapeRegex.ts         # safe text-search regex escaping
+│   │   ├── dashboard/                 # owner-dashboard aggregation helpers
+│   │   │   └── ownerDashboard.queries.ts # 7-day window + profile-view/enrollment/enquiry pipelines
 │   │   ├── logger.ts                  # pino singleton + httpLogger (pino-http)
 │   │   └── redis.ts                   # ioredis singleton + connect/disconnect
 │   ├── middleware/
@@ -76,6 +79,8 @@ Coaching-app/
 │   │   ├── CoachingCenter.ts          # owner ref → 'Owner'
 │   │   ├── CoachingCenterReview.ts    # student→center rating (was Review.ts; collection pinned 'reviews')
 │   │   ├── StudentBookmark.ts         # polymorphic refPath: student saves Teacher/Webinar/CoachingCenter
+│   │   ├── ProfileView.ts             # per-view event for a CoachingCenter (powers owner dashboard graph)
+│   │   ├── Enrollment.ts              # student↔center link, status active/completed/cancelled/expired
 │   │   ├── Enquiry.ts                 # student ref → 'Student'
 │   │   ├── Owner.ts
 │   │   ├── Student.ts
@@ -96,7 +101,8 @@ Coaching-app/
 │   ├── scripts/
 │   │   └── seedAdmin.ts               # bootstrap first admin
 │   ├── types/
-│   │   └── express.d.ts               # Request.auth augmentation
+│   │   ├── express.d.ts               # Request.auth augmentation
+│   │   └── dashboard.ts               # owner-dashboard response types
 │   └── utils/
 │       └── ApiError.ts                # HTTP-aware operational error + optional `body` for fixed response shapes
 ├── decisions/                          # ADR-0001 … ADR-0004
@@ -291,7 +297,22 @@ Coaching-app/
   - `DELETE /api/students/bookmarks/:id` — ownership-checked (403 on others'), 404 if missing. → `204`.
 - **Files**: new `src/models/StudentBookmark.ts`, `src/schemas/bookmarks.schemas.ts`, `src/controllers/bookmarks.controller.ts`; edited `src/routes/students.routes.ts` (+`/bookmarks` block). No `app.ts` change (students router already mounted).
 - **Out of scope** (not requested): unsave-by-target toggle, `isBookmarked` check endpoint, cascade-cleanup when a target is later deleted (a dangling bookmark just populates `target: null`).
+- **Enriched response (shipped)** — `GET`/`POST` bookmark responses now embed, **inside each item**, the **full caller's student** (own-profile view — `email`/`phone` kept, `password`/`__v` stripped via `populate('student','-__v')` + `select:false`) and the **fully-projected target** run through the existing per-type helpers (`projectTeacherPublic`/`projectCenterPublic`/`projectWebinarPublic`). The old partial `TARGET_SELECT` was dropped. `projectTeacherPublic` was made lean-friendly (accepts a hydrated doc **or** a plain object) so it composes with the `.lean()` bookmark query without breaking its existing doc-passing callers. Verified live: teacher/webinar targets leak no `email`/`phone`/`owner`/`isActive`; center target keeps contact (business listing, by design); student has no `password`/`__v`; `?targetType=` filter + regression on `/api/teachers/:id` & `/api/search` all green. Commit `d04f30e` on `dev`.
 - **Verified end-to-end** (live Docker stack): no-token → `401`, teacher token → `403`; create teacher + webinar bookmark → `201`; duplicate → `409`; nonexistent target → `404`; invalid `targetType` enum + unknown key → `400`; list returns both with `target` populated and **no email/phone leak**; `?targetType=` filter works; delete by id → `204`, repeat → `404`; a second student deleting the first's bookmark → `403`. `tsc --noEmit` clean.
+
+### Owner Coaching-Center Dashboard (shipped)
+- **Surface**: `GET /api/owners/dashboard` (`protect` + `requireRole('owner')`) — one round-trip returning six metric sections for the **calling owner's coaching center**. Assumes **one owner = one center**; the center is auto-resolved via `CoachingCenter.findOne({ owner })` (→ `404 "No coaching center found for this owner"` if none). Response envelope `{ success: true, data: {…} }`.
+- **Sections**:
+  - `weeklyProfileViews` (number) — total profile views over today + previous 6 days.
+  - `weeklyEnquiries` (number) — enquiries `createdAt` in the same 7-day window.
+  - `averageRating` / `totalReviews` — **reused from the denormalised `CoachingCenter` fields** (zero extra query).
+  - `activeStudents` (number) — **distinct** students with an `Enrollment` of `status:'active'` (via `$addToSet`).
+  - `profileViewStats` (`[{date:'YYYY-MM-DD', views}]`) — **always 7 entries, ascending, zero-filled** for empty days.
+  - `recentEnquiries` (≤5, newest-first) — `{enquiryId, studentName, phone, email, message, createdAt}` with student contact populated from the `Student` ref (owner's own list).
+- **New models**: `ProfileView` (`{coachingCenter, viewer?, viewedAt}`, one doc per view, index `(coachingCenter, viewedAt)`) and `Enrollment` (`{coachingCenter, student, status, subject?, enrolledAt, endedAt?}`, statuses `active|completed|cancelled|expired`, non-unique index `(coachingCenter, status, student)`).
+- **Efficiency**: 1 center lookup, then **4 parallel** queries via `Promise.all`. Sections #1 + #5 come from **one** `ProfileView` aggregation (`$dateToString` group, JS zero-fill). All aggregation/date logic lives in `src/lib/dashboard/ownerDashboard.queries.ts`; a single `DASHBOARD_TZ` constant (default `'UTC'`) drives both the JS window boundaries and the `$dateToString` timezone so buckets align. Architecture is flat (controller → Mongoose), matching the rest of the repo — no service/repository layer.
+- **Files**: new `src/models/ProfileView.ts`, `src/models/Enrollment.ts`, `src/types/dashboard.ts`, `src/lib/dashboard/ownerDashboard.queries.ts`; edited `src/controllers/dashboard.controller.ts` (+`getOwnerDashboard`), `src/routes/owners.routes.ts` (+route), `src/scripts/seedDemo.ts` (+ProfileView/Enrollment seed, owners bumped 4→5 for 1:1 center mapping).
+- **Verified end-to-end** (live Docker stack, today=2026-06-04): window `2026-05-29 … 2026-06-04`; `weeklyProfileViews` 58 = sum of stats; `profileViewStats` has exactly 7 ascending entries with `2026-05-30` zero-filled; `activeStudents` 3 (distinct active only); `recentEnquiries` ≤5 newest-first with contact; no-token → `401`, student token → `403`, owner-without-center → `404`; per-owner isolation (owner1=58 vs owner2=64, distinct ratings/enquiries). `tsc --noEmit` clean.
 
 ### Phase 2.5 (partial) — Student search for Teachers, Centers & Webinars (shipped)
 - **Surface**: **student-only** (`protect` + `requireRole('student')`) — a single unified endpoint `GET /api/search?searchType=teacher|coaching|webinar`. Built ahead of the full CoachingCenter CRUD (Phase 2.2 still pending) without depending on it.
@@ -395,6 +416,8 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | `teacherreviews` | Teacher reviews by students (new; denormalises rating onto Teacher) |
 | `webinars` | Teacher-hosted webinars (new; powers dashboard "upcoming webinars") |
 | `studentbookmarks` | Student-saved Teacher/Webinar/CoachingCenter (new; polymorphic `refPath`) |
+| `profileviews` | Per-view events on a CoachingCenter (new; powers owner-dashboard weekly/daily graph) |
+| `enrollments` | Student↔center links with lifecycle status (new; powers owner-dashboard active-student count) |
 | `enquiries` | Student enquiries to centers (Phase 1, ref flipped to Student) |
 
 ### Key indexes
@@ -403,14 +426,16 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 - `reviews`: compound unique `(coachingCenter, student)`.
 - `teachers`: text on `name/bio/description`; `subjects`; `(feesRange.min, feesRange.max)`; descending `averageRating`; sparse `2dsphere` on `location`; compound on `(city, isActive, isVerified)`.
 - `students`: sparse `2dsphere` on `location`; `city`.
+- `profileviews`: compound `(coachingCenter, viewedAt desc)` for the 7-day window scan.
+- `enrollments`: compound `(coachingCenter, status, student)` (non-unique; history kept, active students de-duped via `$addToSet`).
 - All four role collections: `email` unique-per-collection.
 
 ### Demo data (`npm run seed:demo`)
-- **`src/scripts/seedDemo.ts`** — one command that **wipes** all 11 collections and inserts a fresh, fully-linked demo dataset so **every API returns real data**: 12 subjects, 1 admin, 4 owners, 8 teachers, 10 students, 5 centers, 10 webinars, 24 teacher reviews, 15 center reviews, 15 bookmarks, 8 enquiries.
+- **`src/scripts/seedDemo.ts`** — one command that **wipes** all 13 collections and inserts a fresh, fully-linked demo dataset so **every API returns real data**: 12 subjects, 1 admin, **5 owners** (1:1 with centers so each owner dashboard resolves a center), 8 teachers, 10 students, 5 centers, 10 webinars, 24 teacher reviews, 15 center reviews, 15 bookmarks, 8 enquiries, **350 profile views** (spread across the last 7 days; day 2 left at 0 to prove zero-fill), **30 enrollments** (3 active + completed/cancelled/expired per center).
 - Built via `new Model({...}).save()` (fires bcrypt + slug + rating-recalc hooks; sidesteps Mongoose v9's array-`create` typing). Subjects/centers omit `slug` (auto). Reviews created after teachers/centers so denormalised `averageRating`/`totalReviews` populate. Geo uses `[lng,lat]` across Kolkata/Mumbai/Delhi/Bangalore.
 - **All demo accounts share password `Password123`**: `admin@demo.com`, `owner1..4@demo.com`, `teacher1..8@demo.com`, `student1..10@demo.com`.
 - Run inside the Docker app container (so it uses the compose Mongo URI): `docker compose exec app npm run seed:demo`.
-- **Verified**: dashboard 5/3/2 sections; search totals teacher 8 / coaching 5 / webinar 10 / combined 23; teacher ratings denormalised to 2.0–4.0; public subjects 12 / webinars 10; admin teacher list 8; reviews/bookmarks populated. `tsc --noEmit` clean.
+- **Verified**: student dashboard 5/3/2 sections; search totals teacher 8 / coaching 5 / webinar 10 / combined 23; teacher ratings denormalised to 2.0–4.0; public subjects 12 / webinars 10; admin teacher list 8; reviews/bookmarks populated; **owner dashboard** (`owner1@demo.com`) returns weeklyProfileViews 58 / 7-day stats with zero-filled day / activeStudents 3 / recent enquiries with contact, and isolates per owner (owner2 = 64). `tsc --noEmit` clean.
 
 ---
 
@@ -478,6 +503,7 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | PATCH | `/api/owners/me` | Bearer (owner) | Whitelisted self-update (name, phone, profileImage). `.strict()` blocks privilege escalation. |
 | DELETE | `/api/owners/me` | Bearer (owner) | Soft-deactivate + `revokeAllForUser`. 204. |
 | POST | `/api/owners/me/password` | Bearer (owner) | `{currentPassword, newPassword}` → 200 `{success, accessToken, refreshToken}` + new refresh cookie. Sibling sessions revoked. |
+| GET | `/api/owners/dashboard` | Bearer (owner) | Owner's coaching-center dashboard. Returns `{success, data:{weeklyProfileViews, weeklyEnquiries, averageRating, totalReviews, activeStudents, profileViewStats[7], recentEnquiries[≤5]}}`. Auto-resolves the owner's single center (404 if none). 7-day window = today + prev 6 days; daily stats always 7 entries ascending, zero-filled. |
 | PATCH | `/api/teachers/me` | Bearer (teacher) | Rich self-PATCH (bio, education, batches, fees, boards, location, etc. — 17 fields). |
 | DELETE | `/api/teachers/me` | Bearer (teacher) | Same as owner. |
 | POST | `/api/teachers/me/password` | Bearer (teacher) | Same as owner. |
@@ -511,8 +537,8 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | POST | `/api/admin/subjects` | Bearer (admin) | Create. `slug` auto-derived; `.strict()`. 409 on duplicate name. |
 | PATCH | `/api/admin/subjects/:id` | Bearer (admin) | Update `name`/`category`/`description`/`isActive`. 409 on duplicate name. (No DELETE — hide via `isActive`.) |
 | GET | `/api/search` | Bearer (student) | **Unified search.** `searchType` ∈ `teacher\|coaching\|webinar` dispatches to one entity; **omitted/empty → combined mixed feed** of all three (see below). Invalid value → 400. `teacher`/`coaching` filters: `q`, `subject` (id or name), `city`, `board`, `minRating`, `minFees`/`maxFees`, geo (`lat`+`lng`+`distanceKm`), pagination — public-safe projection, sorted by rating. `webinar` filters: `q` (title/description), `status`, `upcoming`, `teacher` (id), pagination — sorted soonest-first, teacher populated. Combined mode accepts `q` + pagination only; each item tagged `type`; stable-shuffled by `_id` (consistent across pages). Wrong filter for the type → 400 (`.strict()`). |
-| POST | `/api/students/bookmarks` | Bearer (student) | Save a Teacher/Webinar/CoachingCenter. Body `{targetType, targetId}`. 404 missing/inactive, 409 duplicate. |
-| GET | `/api/students/bookmarks` | Bearer (student) | List caller's bookmarks (newest-first, `?targetType=` filter). `target` populated, public-safe. |
+| POST | `/api/students/bookmarks` | Bearer (student) | Save a Teacher/Webinar/CoachingCenter. Body `{targetType, targetId}`. 404 missing/inactive, 409 duplicate. Returns the enriched item (full student + projected target). |
+| GET | `/api/students/bookmarks` | Bearer (student) | List caller's bookmarks (newest-first, `?targetType=` filter). Each item embeds the full caller `student` (own profile, no password) + fully-projected `target` (per-type public-safe, no PII leak). |
 | DELETE | `/api/students/bookmarks/:id` | Bearer (student) | Delete own bookmark by id. 403 on others', 404 if missing. 204. |
 
 Endpoints still pending from Phase 2 (centers CRUD, courses, center-reviews API) — see section 11.

@@ -14,6 +14,8 @@ import TeacherReview from '../models/TeacherReview.js';
 import CoachingCenterReview from '../models/CoachingCenterReview.js';
 import StudentBookmark from '../models/StudentBookmark.js';
 import Enquiry from '../models/Enquiry.js';
+import ProfileView from '../models/ProfileView.js';
+import Enrollment from '../models/Enrollment.js';
 
 // Comprehensive demo seeder. Wipes the seeded collections and inserts a fresh,
 // coherent, fully-linked dataset so EVERY API returns real data (auth, profiles,
@@ -63,6 +65,8 @@ async function wipe(): Promise<void> {
     CoachingCenterReview.deleteMany({}),
     StudentBookmark.deleteMany({}),
     Enquiry.deleteMany({}),
+    ProfileView.deleteMany({}),
+    Enrollment.deleteMany({}),
   ]);
 }
 
@@ -103,7 +107,7 @@ async function main(): Promise<void> {
 
     // 3. Owners ---------------------------------------------------------------
     const owners = await Promise.all(
-      Array.from({ length: 4 }, (_, i) =>
+      Array.from({ length: 5 }, (_, i) =>
         new Owner({
           name: `Owner ${i + 1}`,
           email: `owner${i + 1}@demo.com`,
@@ -190,7 +194,8 @@ async function main(): Promise<void> {
         return new CoachingCenter({
           name: c.name,
           description: `${c.name} — quality coaching for ${c.subs.join(', ')} in ${c.city}.`,
-          owner: owners[i % owners.length]!._id,
+          // One owner ⇒ one center (1:1) so each ownerN@demo.com has exactly one center.
+          owner: owners[i]!._id,
           address: `${10 + i} Main Road`,
           location: point(c.city),
           area: c.area,
@@ -306,6 +311,56 @@ async function main(): Promise<void> {
     }));
     await Promise.all(enquiryInputs.map((e) => new Enquiry(e).save()));
 
+    // 12. Profile views — per-center events across the last 7 days. Day index 1
+    // is deliberately left at 0 views for every center to prove the dashboard's
+    // zero-fill for empty days. (insertMany — no hooks needed.)
+    const viewPattern = [4, 0, 7, 12, 9, 15, 11];
+    const profileViewDocs: Array<{
+      coachingCenter: mongoose.Types.ObjectId;
+      viewer: mongoose.Types.ObjectId;
+      viewedAt: Date;
+    }> = [];
+    for (let ci = 0; ci < centers.length; ci++) {
+      for (let d = 0; d < 7; d++) {
+        const dayOffset = 6 - d; // d=0 → 6 days ago … d=6 → today
+        const count = d === 1 ? 0 : viewPattern[d]! + ci;
+        for (let k = 0; k < count; k++) {
+          profileViewDocs.push({
+            coachingCenter: centers[ci]!._id,
+            viewer: students[(ci + d + k) % students.length]!._id,
+            viewedAt: new Date(now - dayOffset * DAY),
+          });
+        }
+      }
+    }
+    await ProfileView.insertMany(profileViewDocs);
+
+    // 13. Enrollments — 6 distinct students per center: 3 active, plus one each
+    // completed/cancelled/expired (so activeStudents < total enrollments).
+    const enrollmentStatuses = ['active', 'active', 'active', 'completed', 'cancelled', 'expired'] as const;
+    const enrollmentDocs: Array<{
+      coachingCenter: mongoose.Types.ObjectId;
+      student: mongoose.Types.ObjectId;
+      status: (typeof enrollmentStatuses)[number];
+      subject: mongoose.Types.ObjectId;
+      enrolledAt: Date;
+      endedAt?: Date;
+    }> = [];
+    for (let ci = 0; ci < centers.length; ci++) {
+      for (let j = 0; j < enrollmentStatuses.length; j++) {
+        const status = enrollmentStatuses[j]!;
+        enrollmentDocs.push({
+          coachingCenter: centers[ci]!._id,
+          student: students[(ci + j) % students.length]!._id,
+          status,
+          subject: subjects[(ci + j) % subjects.length]!._id,
+          enrolledAt: new Date(now - (30 + j) * DAY),
+          ...(status === 'active' ? {} : { endedAt: new Date(now - j * DAY) }),
+        });
+      }
+    }
+    await Enrollment.insertMany(enrollmentDocs);
+
     logger.info(
       {
         subjects: subjects.length,
@@ -318,6 +373,8 @@ async function main(): Promise<void> {
         centerReviews: centerReviewCount,
         bookmarks: bookmarkInputs.length,
         enquiries: enquiryInputs.length,
+        profileViews: profileViewDocs.length,
+        enrollments: enrollmentDocs.length,
         password: PASSWORD,
       },
       'demo seed complete',

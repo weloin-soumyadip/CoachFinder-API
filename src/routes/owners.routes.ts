@@ -6,8 +6,11 @@ import { validate } from '../middleware/validate.js';
 import { ownerSelfPatchSchema } from '../schemas/owners.schemas.js';
 import { passwordChangeSchema } from '../schemas/common.js';
 import { updateMe, deleteMe, changePassword } from '../controllers/owners.controller.js';
+import { getOwnerDashboard } from '../controllers/dashboard.controller.js';
 
 const router = Router();
+
+router.get('/dashboard', protect, requireRole('owner'), asyncHandler(getOwnerDashboard));
 
 router.patch(
   '/me',
