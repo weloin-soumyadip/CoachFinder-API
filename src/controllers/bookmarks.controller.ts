@@ -4,6 +4,9 @@ import Teacher from '../models/Teacher.js';
 import Webinar from '../models/Webinar.js';
 import CoachingCenter from '../models/CoachingCenter.js';
 import ApiError from '../utils/ApiError.js';
+import { projectTeacherPublic } from '../lib/crud/projectTeacherPublic.js';
+import { projectCenterPublic } from '../lib/crud/projectCenterPublic.js';
+import { projectWebinarPublic } from '../lib/crud/projectWebinarPublic.js';
 import type { BookmarkCreate, BookmarkListQuery } from '../schemas/bookmarks.schemas.js';
 
 type TargetType = BookmarkCreate['targetType'];
@@ -29,20 +32,37 @@ async function targetExists(targetType: TargetType, id: string): Promise<boolean
   }
 }
 
-// Union allow-list select for the polymorphic populate. Mongo ignores keys not
-// present on a given model, so this safely covers all three target types while
-// deliberately excluding teacher/center contact info (email/phone).
-const TARGET_SELECT =
-  'name profileImage averageRating totalReviews isVerified slug city area ' +
-  'title scheduledAt durationMinutes thumbnail joinUrl status';
-
-const PUBLIC_FIELDS = ['_id', 'targetType', 'target', 'createdAt', 'updatedAt'] as const;
-function projectBookmark(obj: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const key of PUBLIC_FIELDS) {
-    if (obj[key] !== undefined) out[key] = obj[key];
+// Map a fully-populated target to its public-safe projection. Each helper is an
+// allow-list, so the no-leak rules live in one place per entity (teacher/center
+// contact handling differs by design). A dangling ref populates to null.
+function projectTarget(
+  targetType: TargetType,
+  target: unknown,
+): Record<string, unknown> | null {
+  if (!target || typeof target !== 'object') return null;
+  const obj = target as Record<string, unknown>;
+  switch (targetType) {
+    case 'Teacher':
+      return projectTeacherPublic(obj);
+    case 'Webinar':
+      return projectWebinarPublic(obj);
+    case 'CoachingCenter':
+      return projectCenterPublic(obj);
   }
-  return out;
+}
+
+// Shape one bookmark for the response: the populated student (own profile —
+// password/__v already stripped by the populate select) plus the per-type
+// projected target.
+function projectBookmark(b: Record<string, unknown>): Record<string, unknown> {
+  return {
+    _id: b._id,
+    targetType: b.targetType,
+    student: b.student ?? null,
+    target: projectTarget(b.targetType as TargetType, b.target),
+    createdAt: b.createdAt,
+    updatedAt: b.updatedAt,
+  };
 }
 
 // POST /api/students/bookmarks — save a teacher / webinar / coaching center.
@@ -60,7 +80,14 @@ export async function createBookmark(req: Request, res: Response): Promise<void>
       targetType,
       target: targetId,
     });
-    res.status(201).json({ success: true, bookmark: projectBookmark(doc.toObject()) });
+    // Re-read populated so the 201 matches the enriched list shape.
+    const populated = await StudentBookmark.findById(doc._id)
+      .populate('target')
+      .populate('student', '-__v')
+      .lean();
+    res
+      .status(201)
+      .json({ success: true, bookmark: projectBookmark(populated as Record<string, unknown>) });
   } catch (err) {
     // Unique (student, targetType, target) — already saved.
     if ((err as { code?: number }).code === 11000) {
@@ -83,7 +110,8 @@ export async function listBookmarks(req: Request, res: Response): Promise<void> 
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
-      .populate('target', TARGET_SELECT)
+      .populate('target')
+      .populate('student', '-__v')
       .lean(),
     StudentBookmark.countDocuments(filter),
   ]);
