@@ -10,7 +10,7 @@
 - Node 22 + Express 5 + Mongoose 9 backend.
 - Originally JavaScript (CommonJS) → migrated to **TypeScript strict mode + ESM** (commit `af7d7ae`).
 - Git repository on branch `dev`; `main` is the integration branch.
-- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews) ✅, 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, student search (2.5 partial) ✅, student bookmarks ✅ (enriched response ✅), owner dashboard ✅. Still open: CoachingCenter CRUD (2.2), Courses/assignments (2.3), center-review routes, full search.
+- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews) ✅, 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, CoachingCenter CRUD (2.2) ✅, student search (2.5 partial) ✅, student bookmarks ✅ (enriched response ✅), owner dashboard ✅. Still open: Courses/assignments (2.3), center-review routes, admin center moderation, full search.
 
 ---
 
@@ -31,6 +31,7 @@ Coaching-app/
 │   │   ├── students.controller.ts     # self
 │   │   ├── admins.controller.ts       # self
 │   │   ├── dashboard.controller.ts    # student dashboard + owner-center dashboard
+│   │   ├── centers.controller.ts      # CoachingCenter CRUD (public reads + owner writes)
 │   │   ├── subjects.controller.ts     # public list + GET /api/subjects/:id
 │   │   ├── search.controller.ts       # student search: teachers + centers
 │   │   ├── bookmarks.controller.ts    # student bookmarks: create/list/delete (enriched student+target response)
@@ -47,6 +48,7 @@ Coaching-app/
 │   │   ├── students.schemas.ts
 │   │   ├── admins.schemas.ts
 │   │   ├── subjects.schemas.ts
+│   │   ├── centers.schemas.ts         # center create/update/list (nested fees/timings/classRange refines)
 │   │   ├── search.schemas.ts          # teacher/center search query schemas (geo pair refine)
 │   │   └── bookmarks.schemas.ts       # bookmark create + list-query (target-type enum)
 │   ├── lib/
@@ -93,6 +95,7 @@ Coaching-app/
 │   │   ├── owners.routes.ts           # /api/owners/me (PATCH/DELETE/password)
 │   │   ├── teachers.routes.ts         # /api/teachers/{me, :id}
 │   │   ├── students.routes.ts         # /api/students/me
+│   │   ├── centers.routes.ts          # /api/centers (public reads + owner CRUD)
 │   │   ├── admins.routes.ts           # /api/admins/me
 │   │   ├── subjects.routes.ts         # /api/subjects (public list + :id)
 │   │   ├── search.routes.ts           # /api/search?searchType=teacher|coaching|webinar (student-only)
@@ -300,6 +303,20 @@ Coaching-app/
 - **Enriched response (shipped)** — `GET`/`POST` bookmark responses now embed, **inside each item**, the **full caller's student** (own-profile view — `email`/`phone` kept, `password`/`__v` stripped via `populate('student','-__v')` + `select:false`) and the **fully-projected target** run through the existing per-type helpers (`projectTeacherPublic`/`projectCenterPublic`/`projectWebinarPublic`). The old partial `TARGET_SELECT` was dropped. `projectTeacherPublic` was made lean-friendly (accepts a hydrated doc **or** a plain object) so it composes with the `.lean()` bookmark query without breaking its existing doc-passing callers. Verified live: teacher/webinar targets leak no `email`/`phone`/`owner`/`isActive`; center target keeps contact (business listing, by design); student has no `password`/`__v`; `?targetType=` filter + regression on `/api/teachers/:id` & `/api/search` all green. Commit `d04f30e` on `dev`.
 - **Verified end-to-end** (live Docker stack): no-token → `401`, teacher token → `403`; create teacher + webinar bookmark → `201`; duplicate → `409`; nonexistent target → `404`; invalid `targetType` enum + unknown key → `400`; list returns both with `target` populated and **no email/phone leak**; `?targetType=` filter works; delete by id → `204`, repeat → `404`; a second student deleting the first's bookmark → `403`. `tsc --noEmit` clean.
 
+### Phase 2.2 — CoachingCenter CRUD: public reads + owner writes (shipped)
+- **Surface**: public reads, **owner-authored** writes (one owner = one center), soft-delete (no hard delete). Base `/api/centers`. No model change — `CoachingCenter` already existed with slug auto-gen, geo, and denormalised rating.
+- **Endpoints**:
+  - Public `GET /api/centers` — active centers only, pagination + filters (`q` regex on `name`/`description`/`area`, `city`, `board`, `isVerified`), sorted `averageRating desc → totalReviews desc`, `subjectsOffered` populated (`name`,`slug`), **public projection** (`owner`/`isActive`/`__v` hidden via `projectCenterPublic`).
+  - Public `GET /api/centers/:id` — single active center (404 if missing or `isActive=false` so soft-deleted centers don't leak), same projection.
+  - Owner `POST /api/centers` (`protect`+`requireRole('owner')`) — `owner` taken from the token (never body); **409 if the owner already has a center**; `slug` auto-derived; `.strict()` rejects server-controlled fields (`owner`/`slug`/`isActive`/`isVerified`/`averageRating`/`totalReviews`). 201 `{ center }` (full doc — it's the owner's own).
+  - Owner `GET /api/centers/me` — the caller's own center in any state (registered before `/:id` so `me` isn't parsed as an ObjectId). 404 if none.
+  - Owner `PATCH /api/centers/:id` — owner-only edit (403 on others'); `Object.assign + save()` re-runs validators and re-slugs on name/city change; E11000 → 409.
+  - Owner `DELETE /api/centers/:id` — owner-only soft-delete (`isActive=false`), 403 on others', 204.
+- **Schemas** (`src/schemas/centers.schemas.ts`) — `.strict()` create/update/list-query; nested `classRange`/`fees` carry `.refine()` (from≤to, min≤max); `timings[]` items validate `day` enum + `HH:mm`; `centerUpdateSchema = z.object(centerFields).partial().strict()`. Reuses `locationSchema`/`objectIdSchema`/`phoneSchema`/`profileImageSchema`/`paginationFields` from `common.ts`.
+- **Files**: new `src/schemas/centers.schemas.ts`, `src/controllers/centers.controller.ts`, `src/routes/centers.routes.ts`; mounted `/api/centers` in `src/app.ts`. Reuses existing `projectCenterPublic` + `escapeRegex`.
+- **Out of scope (deferred)**: admin center moderation (list/verify/activate — Phase 2.6), center-review HTTP routes (Phase 2.4), `area` filter in unified search.
+- **Verified end-to-end** (live Docker stack): public list hides `owner`/`isActive` and populates subjects; public get works; fresh owner `GET /me` → 404 then `POST` → 201 with auto-slug (`test-tutorials-kolkata-7fcw`) + owner set + `isActive:true`; **duplicate create → 409**; PATCH own → 200 (fields updated); PATCH another owner's center → 403; unknown key (`isVerified`) → 400 via `.strict()`; create missing `address` → 400; no-token POST → 401, student POST → 403; DELETE own → 204, public GET after → 404 while owner `GET /me` still 200 (sees own inactive center). `tsc --noEmit` clean.
+
 ### Owner Coaching-Center Dashboard (shipped)
 - **Surface**: `GET /api/owners/dashboard` (`protect` + `requireRole('owner')`) — one round-trip returning six metric sections for the **calling owner's coaching center**. Assumes **one owner = one center**; the center is auto-resolved via `CoachingCenter.findOne({ owner })` (→ `404 "No coaching center found for this owner"` if none). Response envelope `{ success: true, data: {…} }`.
 - **Sections**:
@@ -503,6 +520,12 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | PATCH | `/api/owners/me` | Bearer (owner) | Whitelisted self-update (name, phone, profileImage). `.strict()` blocks privilege escalation. |
 | DELETE | `/api/owners/me` | Bearer (owner) | Soft-deactivate + `revokeAllForUser`. 204. |
 | POST | `/api/owners/me/password` | Bearer (owner) | `{currentPassword, newPassword}` → 200 `{success, accessToken, refreshToken}` + new refresh cookie. Sibling sessions revoked. |
+| GET | `/api/centers` | **public** | List active centers + pagination + filters (`q`, `city`, `board`, `isVerified`). Public projection (no `owner`/`isActive`), `subjectsOffered` populated, sorted by rating. |
+| GET | `/api/centers/me` | Bearer (owner) | Owner's own center, any state. 404 if none. |
+| GET | `/api/centers/:id` | **public** | Single active center. 404 if missing or `!isActive`. 400 on bad ObjectId. |
+| POST | `/api/centers` | Bearer (owner) | Create center (`owner` from token, `slug` auto). 409 if owner already has one. `.strict()`. |
+| PATCH | `/api/centers/:id` | Bearer (owner) | Owner-only edit. 403 on others'. 409 on slug clash. |
+| DELETE | `/api/centers/:id` | Bearer (owner) | Owner-only soft-delete (`isActive=false`). 204. |
 | GET | `/api/owners/dashboard` | Bearer (owner) | Owner's coaching-center dashboard. Returns `{success, data:{weeklyProfileViews, weeklyEnquiries, averageRating, totalReviews, activeStudents, profileViewStats[7], recentEnquiries[≤5]}}`. Auto-resolves the owner's single center (404 if none). 7-day window = today + prev 6 days; daily stats always 7 entries ascending, zero-filled. |
 | PATCH | `/api/teachers/me` | Bearer (teacher) | Rich self-PATCH (bio, education, batches, fees, boards, location, etc. — 17 fields). |
 | DELETE | `/api/teachers/me` | Bearer (teacher) | Same as owner. |
@@ -553,11 +576,11 @@ Endpoints still pending from Phase 2 (centers CRUD, courses, center-reviews API)
 
 ## 11. Pending tasks
 
-### Phase 2.2 — CoachingCenter CRUD + Subjects (in progress)
-- Controllers + routes for centers (`POST/GET/PATCH/DELETE /api/centers`, soft delete) — **pending**
+### Phase 2.2 — CoachingCenter CRUD + Subjects (mostly shipped)
+- ✅ Controllers + routes for centers (`POST/GET/PATCH/DELETE /api/centers` + `GET /api/centers/me`, public reads, owner writes, soft delete) — see section 5 "CoachingCenter CRUD".
 - ✅ Public subject list/get + admin subject create/update (`/api/subjects` + `/api/admin/subjects`) — see section 5 "Subject CRUD". No delete (hide via `isActive`).
-- `seedSubjects.ts` for canonical subject fixture — **pending**
-- Still pending: wire subjects into teacher/center references (subject selection on profiles/search)
+- `seedSubjects.ts` for canonical subject fixture — **pending** (covered in practice by `seed:demo`)
+- Still pending: **admin** center moderation (list/verify/activate — Phase 2.6); wire subjects into teacher/center references on search beyond current support
 
 ### Phase 2.3 — Course + TeacherCenterAssignment
 - New models: `Course`, `TeacherCenterAssignment`
