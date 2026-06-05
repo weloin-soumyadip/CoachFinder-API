@@ -10,13 +10,24 @@ import {
   centerListQuerySchema,
 } from '../schemas/centers.schemas.js';
 import {
+  centerReviewCreateSchema,
+  centerReviewListQuerySchema,
+} from '../schemas/centerReviews.schemas.js';
+import { enquiryCreateSchema } from '../schemas/enquiries.schemas.js';
+import {
   create,
   list,
   getMine,
   getById,
+  recordView,
   update,
   remove,
 } from '../controllers/centers.controller.js';
+import {
+  create as createReview,
+  listForCenter as listReviews,
+} from '../controllers/centerReviews.controller.js';
+import { create as createEnquiry } from '../controllers/enquiries.controller.js';
 
 const router = Router();
 
@@ -30,6 +41,41 @@ router.post('/', protect, requireRole('owner'), validate(centerCreateSchema), as
 
 // Public center profile.
 router.get('/:id', validate(idParamSchema, 'params'), asyncHandler(getById));
+
+// Record a profile view — authenticated students & teachers only.
+router.post(
+  '/:id/views',
+  protect,
+  requireRole('teacher', 'student'),
+  validate(idParamSchema, 'params'),
+  asyncHandler(recordView),
+);
+
+// Center reviews — public list, student-authored create.
+router.get(
+  '/:id/reviews',
+  validate(idParamSchema, 'params'),
+  validate(centerReviewListQuerySchema, 'query'),
+  asyncHandler(listReviews),
+);
+router.post(
+  '/:id/reviews',
+  protect,
+  requireRole('student'),
+  validate(idParamSchema, 'params'),
+  validate(centerReviewCreateSchema),
+  asyncHandler(createReview),
+);
+
+// Student-authored enquiry to a center.
+router.post(
+  '/:id/enquiries',
+  protect,
+  requireRole('student'),
+  validate(idParamSchema, 'params'),
+  validate(enquiryCreateSchema),
+  asyncHandler(createEnquiry),
+);
 
 // Owner-only mutations on their own center.
 router.patch(

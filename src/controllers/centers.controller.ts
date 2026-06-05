@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import ApiError from '../utils/ApiError.js';
 import CoachingCenter from '../models/CoachingCenter.js';
+import ProfileView from '../models/ProfileView.js';
 import { escapeRegex } from '../lib/crud/escapeRegex.js';
 import { projectCenterPublic } from '../lib/crud/projectCenterPublic.js';
 // Side-effect import: registers the Subject schema so populate('subjectsOffered')
@@ -87,6 +88,25 @@ export async function getById(req: Request, res: Response): Promise<void> {
     .lean();
   if (!center) throw new ApiError(404, 'Coaching center not found');
   res.status(200).json({ center: projectCenterPublic(center as Record<string, unknown>) });
+}
+
+// POST /api/centers/:id/views — record a profile view.
+// Auth required; only students and teachers may record a view (enforced by
+// requireRole on the route), so the viewer is always attributed. Raw event, no
+// dedupe — the dashboard aggregates these into the weekly total + per-day graph.
+export async function recordView(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as { id: string };
+
+  const exists = await CoachingCenter.exists({ _id: id, isActive: true });
+  if (!exists) throw new ApiError(404, 'Coaching center not found');
+
+  if (req.auth?.type !== 'student' && req.auth?.type !== 'teacher') {
+    throw new ApiError(403, 'Only students and teachers can record a view');
+  }
+  const viewerType = req.auth.type === 'teacher' ? 'Teacher' : 'Student';
+  await ProfileView.create({ coachingCenter: id, viewer: req.auth.doc._id, viewerType });
+
+  res.status(201).json({ success: true });
 }
 
 // PATCH /api/centers/:id — owner-only edit of their own center.

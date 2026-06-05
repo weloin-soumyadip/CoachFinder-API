@@ -318,6 +318,7 @@ async function main(): Promise<void> {
     const profileViewDocs: Array<{
       coachingCenter: mongoose.Types.ObjectId;
       viewer: mongoose.Types.ObjectId;
+      viewerType: 'Student' | 'Teacher';
       viewedAt: Date;
     }> = [];
     for (let ci = 0; ci < centers.length; ci++) {
@@ -328,6 +329,7 @@ async function main(): Promise<void> {
           profileViewDocs.push({
             coachingCenter: centers[ci]!._id,
             viewer: students[(ci + d + k) % students.length]!._id,
+            viewerType: 'Student',
             viewedAt: new Date(now - dayOffset * DAY),
           });
         }

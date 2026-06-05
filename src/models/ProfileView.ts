@@ -10,8 +10,11 @@ const profileViewSchema = new Schema(
       ref: 'CoachingCenter',
       required: true,
     },
-    // Optional — anonymous views are allowed.
-    viewer: { type: Schema.Types.ObjectId, ref: 'Student' },
+    // Polymorphic viewer — only authenticated students/teachers may record a
+    // view, so the viewer is always attributed (no anonymous). refPath resolves
+    // to the right collection on populate (same pattern as StudentBookmark).
+    viewerType: { type: String, enum: ['Student', 'Teacher'], required: true },
+    viewer: { type: Schema.Types.ObjectId, refPath: 'viewerType', required: true },
     viewedAt: { type: Date, required: true, default: Date.now },
   },
   { timestamps: false },

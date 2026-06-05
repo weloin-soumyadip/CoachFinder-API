@@ -10,7 +10,7 @@
 - Node 22 + Express 5 + Mongoose 9 backend.
 - Originally JavaScript (CommonJS) → migrated to **TypeScript strict mode + ESM** (commit `af7d7ae`).
 - Git repository on branch `dev`; `main` is the integration branch.
-- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews) ✅, 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, CoachingCenter CRUD (2.2) ✅, student search (2.5 partial) ✅, student bookmarks ✅ (enriched response ✅), owner dashboard ✅. Still open: Courses/assignments (2.3), center-review routes, admin center moderation, full search.
+- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews ✅ + center-review routes ✅), 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, CoachingCenter CRUD (2.2) ✅, student search (2.5 partial) ✅, student bookmarks ✅ (enriched response ✅), owner dashboard ✅. **Owner-dashboard write APIs all shipped** ✅ — every dashboard metric is now driven by real API activity: profile-view recording, center reviews, enquiry creation, owner-managed enrollments. Still open: Courses/assignments (2.3), admin center moderation, full search, owner-side enquiry management.
 
 ---
 
@@ -384,6 +384,33 @@ Coaching-app/
 - **Verified**: `tsc --noEmit` clean. `grep -rn 'findEmailOwner\|already registered as' src/` returns no matches.
 - **Out of scope but noted**: `login` returns `"Account is deactivated"` when the email exists but `isActive=false`. Separate account-enumeration channel (tells an attacker the email exists, but not the role). Not folded into `"Invalid credentials"` yet — left for a follow-up decision.
 
+### Owner-dashboard write APIs — every metric now driven by real activity (shipped)
+The owner dashboard (`GET /api/owners/dashboard`) was read-only over four collections that had **no write API** (only the seeder wrote them), so its numbers never moved in production. Four endpoints close that gap. Each was built by mirroring an existing pattern in the repo; **no new architecture** (flat route → controller → Mongoose).
+
+- **Profile-view recording** — `POST /api/centers/:id/views` feeds `weeklyProfileViews` + `profileViewStats`.
+  - **Auth-restricted**: authenticated **students & teachers only** (`protect` + `requireRole('teacher','student')`). Anonymous → 401, owner/admin → 403.
+  - **Polymorphic viewer**: `ProfileView.viewer` switched from `ref:'Student'` to `refPath:'viewerType'` with a required `viewerType` enum (`Student`|`Teacher`) — mirrors the `StudentBookmark` polymorphic pattern, so a teacher id isn't stored in a Student-typed ref. `seedDemo` now stamps `viewerType:'Student'` on seeded views.
+  - Verifies the center exists & `isActive` (404). Raw event, no dedupe — the dashboard groups by day. `201 { success:true }`.
+  - **Files**: edited `src/models/ProfileView.ts`, `src/controllers/centers.controller.ts` (+`recordView`), `src/routes/centers.routes.ts`, `src/scripts/seedDemo.ts`. (A short-lived `optionalProtect` middleware from the first iteration was removed once the rule changed to auth-required.)
+  - **Verified**: anonymous 401, owner/admin 403, student/teacher 201, bad id 400, missing center 404; newest views carry the correct `viewerType`; dashboard weekly total + today's bucket climb live.
+
+- **CoachingCenter reviews** — feeds `averageRating` + `totalReviews`. The model (`CoachingCenterReview`) and its `recalcStats` denormalisation hooks already existed; this exposes them over HTTP. **1:1 mirror of the teacher-reviews feature.**
+  - Public `GET /api/centers/:id/reviews` (paginated, `student` populated); student-authored `POST /api/centers/:id/reviews` (404 if center missing/inactive, **409** duplicate via unique `(coachingCenter, student)`); author-only `PATCH`/`DELETE /api/center-reviews/:id` (sets `isEdited`, recalcs on every write).
+  - **Files**: new `src/schemas/centerReviews.schemas.ts`, `src/controllers/centerReviews.controller.ts`, `src/routes/centerReviews.routes.ts`; edited `src/routes/centers.routes.ts` (nested GET/POST), `src/app.ts` (mounted `/api/center-reviews`).
+  - **Verified**: list 200; create 201; duplicate 409; `.strict()`/range 400; no-auth 401; author edit 200 (`isEdited:true`); other-student edit 403; delete 204; center + dashboard `averageRating`/`totalReviews` rise on create (4→4.3, 3→4) and fall back on delete.
+
+- **Student enquiry creation** — `POST /api/centers/:id/enquiries` feeds `weeklyEnquiries` + `recentEnquiries`. Student-only, body `{ message, subject? }`. Verifies center (404) and subject if given (404). No unique constraint → a student may send multiple enquiries (no 409). Response is an allow-list projection that **omits `ownerNotes`** (owner-private).
+  - **Files**: new `src/schemas/enquiries.schemas.ts`, `src/controllers/enquiries.controller.ts`; edited `src/routes/centers.routes.ts` (nested POST).
+  - **Verified**: create 201 (`status:'new'`, no `ownerNotes` leak); second enquiry 201; missing-message/unknown-key/bad-subject 400; nonexistent subject 404; no-auth 401; owner 403; bad/missing center 400/404; dashboard `weeklyEnquiries` +2 and newest enquiry surfaces in `recentEnquiries` with student contact.
+  - **Out of scope** (chosen): owner list/manage enquiries (status + `ownerNotes`), student "my enquiries".
+
+- **Owner-managed enrollments** — `activeStudents` (distinct students with an `active` enrollment). Owner-managed full roster: create + list + status-update, all owner-only and scoped to the caller's auto-resolved center (`CoachingCenter.findOne({ owner })`, same as the dashboard).
+  - `POST /api/owners/enrollments` (`{ studentId, subject?, status? }`) — verifies student/subject (404); **soft 409 guard** against a second concurrent `active` row for the same student (the model index is intentionally non-unique to keep history). `GET /api/owners/enrollments` (filter `status`, paginate, student+subject populated). `PATCH /api/owners/enrollments/:id` — ownership-checked (403); sets `endedAt` on terminal status, clears it (re-checking the 409) on return to `active`.
+  - **Files**: new `src/schemas/enrollments.schemas.ts`, `src/controllers/enrollments.controller.ts`; edited `src/routes/owners.routes.ts` (3 routes). Reuses `ENROLLMENT_STATUSES` from the model via `z.enum(...)`.
+  - **Verified**: no-auth 401; student 403; bad id/`.strict()` 400; nonexistent student 404; create 201; duplicate-active 409; list 200 with contact + status filter; PATCH→completed 200 (`endedAt` set); other-owner PATCH 403; bad/missing enrollment id 400/404; dashboard `activeStudents` 3→4 on create, 4→3 on completion.
+
+- **Cross-cutting**: all four were verified live in the Docker stack and `tsc --noEmit` is clean.
+
 ---
 
 ## 6. Docker setup
@@ -563,8 +590,17 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | POST | `/api/students/bookmarks` | Bearer (student) | Save a Teacher/Webinar/CoachingCenter. Body `{targetType, targetId}`. 404 missing/inactive, 409 duplicate. Returns the enriched item (full student + projected target). |
 | GET | `/api/students/bookmarks` | Bearer (student) | List caller's bookmarks (newest-first, `?targetType=` filter). Each item embeds the full caller `student` (own profile, no password) + fully-projected `target` (per-type public-safe, no PII leak). |
 | DELETE | `/api/students/bookmarks/:id` | Bearer (student) | Delete own bookmark by id. 403 on others', 404 if missing. 204. |
+| POST | `/api/centers/:id/views` | Bearer (student\|teacher) | Record a profile view (feeds dashboard `weeklyProfileViews`/`profileViewStats`). Anonymous → 401, owner/admin → 403. Polymorphic `viewer` (`viewerType` Student\|Teacher). 404 if center missing/inactive. 201. |
+| GET | `/api/centers/:id/reviews` | public | Paginated center reviews (`student` populated). |
+| POST | `/api/centers/:id/reviews` | Bearer (student) | Review a center. 404 if missing/inactive, 409 duplicate. Recalcs center `averageRating`/`totalReviews`. |
+| PATCH | `/api/center-reviews/:id` | Bearer (student) | Author-only edit (sets `isEdited`, recalcs). |
+| DELETE | `/api/center-reviews/:id` | Bearer (student) | Author-only delete (recalcs). 204. |
+| POST | `/api/centers/:id/enquiries` | Bearer (student) | Send an enquiry to a center (`{message, subject?}`). Feeds dashboard `weeklyEnquiries`/`recentEnquiries`. 404 center/subject; response omits `ownerNotes`. 201. |
+| POST | `/api/owners/enrollments` | Bearer (owner) | Enroll a student at the owner's center (`{studentId, subject?, status?}`). 404 student/subject; **409** if already actively enrolled. Feeds dashboard `activeStudents`. 201. |
+| GET | `/api/owners/enrollments` | Bearer (owner) | List the owner's center enrollments (`?status=&page=&limit=`, student+subject populated). |
+| PATCH | `/api/owners/enrollments/:id` | Bearer (owner) | Update status (`active`→`completed`/`cancelled`/`expired`); sets/clears `endedAt`. 403 on others'. |
 
-Endpoints still pending from Phase 2 (centers CRUD, courses, center-reviews API) — see section 11.
+Endpoints still pending from Phase 2 (courses, owner-side enquiry management, admin center moderation) — see section 11.
 
 ---
 
@@ -592,7 +628,7 @@ Endpoints still pending from Phase 2 (centers CRUD, courses, center-reviews API)
 ### Phase 2.4 — Reviews (teachers) *(mostly shipped)*
 - ✅ New model: `TeacherReview` with denormalised rating hooks on `Teacher`
 - ✅ Routes: `POST /api/teachers/:id/reviews`, edit/delete on `/api/teacher-reviews/:id`
-- Still pending: wire student-authored **center** reviews via the `CoachingCenterReview` model (model + hooks exist, but no HTTP routes yet)
+- ✅ Student-authored **center** reviews shipped via `CoachingCenterReview` — `GET`/`POST /api/centers/:id/reviews` + edit/delete `/api/center-reviews/:id` (see section 5 "Owner-dashboard write APIs").
 - ADR-0005 (cross-collection email race) + ADR-0006 (teacher rating denormalisation) — pending write
 
 ### Phase 2.5 — Search (in progress)
@@ -616,6 +652,11 @@ Endpoints still pending from Phase 2 (centers CRUD, courses, center-reviews API)
 - ✅ `PATCH/DELETE /api/admins/me` + `POST /api/admins/me/password`
 - ✅ Public `GET /api/teachers/:id` (allow-list projection, no email/phone leak)
 - Deferred: **email-change flow** (cross-collection re-uniqueness + re-verification), **admin-driven password reset** (token email), **hard delete** (would orphan CoachingCenter/Review/Enquiry refs)
+
+### Owner-dashboard write APIs — follow-ups (core shipped; see section 5)
+- ✅ Profile-view recording, center reviews, enquiry creation, owner-managed enrollments — every dashboard metric is now driven by real API activity.
+- Still pending (deliberately out of scope): **owner-side enquiry management** (`GET /api/owners/enquiries`, `PATCH .../:id` status + `ownerNotes`), student "my enquiries" list, student self-enroll / student "my enrollments", enrollment hard-delete, auto-expiry job for `expired` enrollments.
+- Frontend wiring (e.g. firing `POST /api/centers/:id/views` on the center profile page) — out of scope for this backend repo.
 
 ### Cross-cutting (deferred)
 - File upload pipeline (multer + storage adapter) for profile/banner images
