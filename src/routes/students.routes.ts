@@ -9,7 +9,10 @@ import {
   bookmarkCreateSchema,
   bookmarkListQuerySchema,
 } from '../schemas/bookmarks.schemas.js';
-import { enquiryStudentListQuerySchema } from '../schemas/enquiries.schemas.js';
+import {
+  enquiryStudentListQuerySchema,
+  enquiryStudentSearchQuerySchema,
+} from '../schemas/enquiries.schemas.js';
 import { updateMe, deleteMe, changePassword } from '../controllers/students.controller.js';
 import { getStudentDashboard } from '../controllers/dashboard.controller.js';
 import {
@@ -17,7 +20,10 @@ import {
   listBookmarks,
   removeBookmark,
 } from '../controllers/bookmarks.controller.js';
-import { studentList as listMyEnquiries } from '../controllers/enquiries.controller.js';
+import {
+  studentList as listMyEnquiries,
+  studentSearch as searchMyEnquiries,
+} from '../controllers/enquiries.controller.js';
 
 const router = Router();
 
@@ -69,6 +75,14 @@ router.get(
   requireRole('student'),
   validate(enquiryStudentListQuerySchema, 'query'),
   asyncHandler(listMyEnquiries),
+);
+// Search registered before any future '/enquiries/:id'; harmless here regardless.
+router.get(
+  '/enquiries/search',
+  protect,
+  requireRole('student'),
+  validate(enquiryStudentSearchQuerySchema, 'query'),
+  asyncHandler(searchMyEnquiries),
 );
 
 export default router;

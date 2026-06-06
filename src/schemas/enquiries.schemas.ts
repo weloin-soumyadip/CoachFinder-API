@@ -41,3 +41,41 @@ export const enquiryStudentListQuerySchema = z
   .strict();
 
 export type EnquiryStudentListQuery = z.infer<typeof enquiryStudentListQuerySchema>;
+
+// dateFrom must not be after dateTo (shared by both search schemas).
+const dateRangeRefine = (v: { dateFrom?: Date; dateTo?: Date }): boolean =>
+  v.dateFrom === undefined || v.dateTo === undefined || v.dateFrom <= v.dateTo;
+const dateRangeMessage = { message: 'dateFrom must be <= dateTo', path: ['dateFrom'] };
+
+// Owner enquiry search — every filter optional; `subject`/`student` accept an
+// ObjectId OR human text (name/slug, name/email), so they're free strings.
+export const enquiryOwnerSearchQuerySchema = z
+  .object({
+    ...paginationFields,
+    q: z.string().trim().min(1).optional(),
+    status: z.enum(ENQUIRY_STATUSES).optional(),
+    subject: z.string().trim().min(1).optional(),
+    student: z.string().trim().min(1).optional(),
+    dateFrom: z.coerce.date().optional(),
+    dateTo: z.coerce.date().optional(),
+  })
+  .strict()
+  .refine(dateRangeRefine, dateRangeMessage);
+
+export type EnquiryOwnerSearchQuery = z.infer<typeof enquiryOwnerSearchQuerySchema>;
+
+// Student enquiry search — same as owner minus the `student` filter (always self)
+// and minus any ownerNotes exposure (handled in the controller projection).
+export const enquiryStudentSearchQuerySchema = z
+  .object({
+    ...paginationFields,
+    q: z.string().trim().min(1).optional(),
+    status: z.enum(ENQUIRY_STATUSES).optional(),
+    subject: z.string().trim().min(1).optional(),
+    dateFrom: z.coerce.date().optional(),
+    dateTo: z.coerce.date().optional(),
+  })
+  .strict()
+  .refine(dateRangeRefine, dateRangeMessage);
+
+export type EnquiryStudentSearchQuery = z.infer<typeof enquiryStudentSearchQuerySchema>;

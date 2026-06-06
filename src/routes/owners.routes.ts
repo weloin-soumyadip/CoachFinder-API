@@ -13,6 +13,7 @@ import {
 import {
   enquiryOwnerUpdateSchema,
   enquiryOwnerListQuerySchema,
+  enquiryOwnerSearchQuerySchema,
 } from '../schemas/enquiries.schemas.js';
 import { updateMe, deleteMe, changePassword } from '../controllers/owners.controller.js';
 import { getOwnerDashboard } from '../controllers/dashboard.controller.js';
@@ -25,6 +26,7 @@ import {
   ownerList as listEnquiries,
   ownerGet as getEnquiry,
   ownerUpdate as updateEnquiry,
+  ownerSearch as searchEnquiries,
 } from '../controllers/enquiries.controller.js';
 
 const router = Router();
@@ -62,6 +64,14 @@ router.get(
   requireRole('owner'),
   validate(enquiryOwnerListQuerySchema, 'query'),
   asyncHandler(listEnquiries),
+);
+// Search MUST be registered before '/enquiries/:id' so 'search' isn't parsed as an id.
+router.get(
+  '/enquiries/search',
+  protect,
+  requireRole('owner'),
+  validate(enquiryOwnerSearchQuerySchema, 'query'),
+  asyncHandler(searchEnquiries),
 );
 router.get(
   '/enquiries/:id',

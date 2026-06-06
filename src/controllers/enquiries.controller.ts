@@ -4,11 +4,16 @@ import Enquiry from '../models/Enquiry.js';
 import CoachingCenter from '../models/CoachingCenter.js';
 import Subject from '../models/Subject.js';
 import ApiError from '../utils/ApiError.js';
+import { escapeRegex } from '../lib/crud/escapeRegex.js';
+import { resolveSubjectIds } from '../lib/crud/resolveSubjectIds.js';
+import { resolveStudentIds } from '../lib/crud/resolveStudentIds.js';
 import type {
   EnquiryCreate,
   EnquiryOwnerUpdate,
   EnquiryOwnerListQuery,
   EnquiryStudentListQuery,
+  EnquiryOwnerSearchQuery,
+  EnquiryStudentSearchQuery,
 } from '../schemas/enquiries.schemas.js';
 
 function requireStudent(req: Request) {
@@ -158,6 +163,88 @@ export async function studentList(req: Request, res: Response): Promise<void> {
 
   const filter: Record<string, unknown> = { student: student._id };
   if (status) filter.status = status;
+
+  const [data, total] = await Promise.all([
+    Enquiry.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate('coachingCenter', 'name')
+      .populate('subject', 'name')
+      .lean(),
+    Enquiry.countDocuments(filter),
+  ]);
+
+  // Project through the allow-list so `ownerNotes` is never exposed to students.
+  res.status(200).json({
+    success: true,
+    data: data.map((e) => projectEnquiryPublic(e as Record<string, unknown>)),
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  });
+}
+
+// Build a Mongo createdAt range from optional dateFrom/dateTo bounds.
+function createdAtRange(dateFrom?: Date, dateTo?: Date): Record<string, Date> | undefined {
+  if (!dateFrom && !dateTo) return undefined;
+  const range: Record<string, Date> = {};
+  if (dateFrom) range.$gte = dateFrom;
+  if (dateTo) range.$lte = dateTo;
+  return range;
+}
+
+// GET /api/owners/enquiries/search — owner searches enquiries of THEIR center by
+// keyword (message + ownerNotes), status, subject (id/name), student (id/name/email),
+// and createdAt range. Always scoped to the owner's one center.
+export async function ownerSearch(req: Request, res: Response): Promise<void> {
+  const owner = requireOwner(req);
+  const centerId = await resolveOwnerCenter(owner._id);
+  const { page, limit, q, status, subject, student, dateFrom, dateTo } =
+    req.query as unknown as EnquiryOwnerSearchQuery;
+
+  const filter: Record<string, unknown> = { coachingCenter: centerId };
+  if (q) {
+    const rx = { $regex: escapeRegex(q), $options: 'i' };
+    filter.$or = [{ message: rx }, { ownerNotes: rx }];
+  }
+  if (status) filter.status = status;
+  if (subject) filter.subject = { $in: await resolveSubjectIds(subject) };
+  if (student) filter.student = { $in: await resolveStudentIds(student) };
+  const range = createdAtRange(dateFrom, dateTo);
+  if (range) filter.createdAt = range;
+
+  const [data, total] = await Promise.all([
+    Enquiry.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate('student', 'name phone email')
+      .populate('subject', 'name')
+      .lean(),
+    Enquiry.countDocuments(filter),
+  ]);
+
+  // Owner-scoped, so the full doc (incl. ownerNotes) is returned as-is.
+  res.status(200).json({
+    success: true,
+    data,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  });
+}
+
+// GET /api/students/enquiries/search — student searches THEIR OWN enquiries by
+// keyword (message only), status, subject (id/name), and createdAt range.
+export async function studentSearch(req: Request, res: Response): Promise<void> {
+  const student = requireStudent(req);
+  const { page, limit, q, status, subject, dateFrom, dateTo } =
+    req.query as unknown as EnquiryStudentSearchQuery;
+
+  const filter: Record<string, unknown> = { student: student._id };
+  // Keyword matches the message only — ownerNotes stays private to the owner.
+  if (q) filter.message = { $regex: escapeRegex(q), $options: 'i' };
+  if (status) filter.status = status;
+  if (subject) filter.subject = { $in: await resolveSubjectIds(subject) };
+  const range = createdAtRange(dateFrom, dateTo);
+  if (range) filter.createdAt = range;
 
   const [data, total] = await Promise.all([
     Enquiry.find(filter)
