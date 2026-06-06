@@ -318,7 +318,7 @@ Coaching-app/
 - **Verified end-to-end** (live Docker stack): public list hides `owner`/`isActive` and populates subjects; public get works; fresh owner `GET /me` → 404 then `POST` → 201 with auto-slug (`test-tutorials-kolkata-7fcw`) + owner set + `isActive:true`; **duplicate create → 409**; PATCH own → 200 (fields updated); PATCH another owner's center → 403; unknown key (`isVerified`) → 400 via `.strict()`; create missing `address` → 400; no-token POST → 401, student POST → 403; DELETE own → 204, public GET after → 404 while owner `GET /me` still 200 (sees own inactive center). `tsc --noEmit` clean.
 
 ### Owner Coaching-Center Dashboard (shipped)
-- **Surface**: `GET /api/owners/dashboard` (`protect` + `requireRole('owner')`) — one round-trip returning six metric sections for the **calling owner's coaching center**. Assumes **one owner = one center**; the center is auto-resolved via `CoachingCenter.findOne({ owner })` (→ `404 "No coaching center found for this owner"` if none). Response envelope `{ success: true, data: {…} }`.
+- **Surface**: `GET /api/owners/dashboard` (`protect` + `requireRole('owner')`) — one round-trip returning six metric sections for the **calling owner's coaching center**. Assumes **one owner = one center**; the center is auto-resolved via `CoachingCenter.findOne({ owner })`. **If the owner has no center yet, it returns `200` with an empty/zeroed dashboard** (all metrics `0`, `profileViewStats: []`, `recentEnquiries: []`) rather than a 404 — so the client renders a "no center yet" state without special-casing an error (commit `0c17eba`). Response envelope `{ success: true, data: {…} }`.
 - **Sections**:
   - `weeklyProfileViews` (number) — total profile views over today + previous 6 days.
   - `weeklyEnquiries` (number) — enquiries `createdAt` in the same 7-day window.
@@ -553,7 +553,7 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | POST | `/api/centers` | Bearer (owner) | Create center (`owner` from token, `slug` auto). 409 if owner already has one. `.strict()`. |
 | PATCH | `/api/centers/:id` | Bearer (owner) | Owner-only edit. 403 on others'. 409 on slug clash. |
 | DELETE | `/api/centers/:id` | Bearer (owner) | Owner-only soft-delete (`isActive=false`). 204. |
-| GET | `/api/owners/dashboard` | Bearer (owner) | Owner's coaching-center dashboard. Returns `{success, data:{weeklyProfileViews, weeklyEnquiries, averageRating, totalReviews, activeStudents, profileViewStats[7], recentEnquiries[≤5]}}`. Auto-resolves the owner's single center (404 if none). 7-day window = today + prev 6 days; daily stats always 7 entries ascending, zero-filled. |
+| GET | `/api/owners/dashboard` | Bearer (owner) | Owner's coaching-center dashboard. Returns `{success, data:{weeklyProfileViews, weeklyEnquiries, averageRating, totalReviews, activeStudents, profileViewStats[7], recentEnquiries[≤5]}}`. Auto-resolves the owner's single center; **no center → 200 with an empty/zeroed dashboard** (not 404). 7-day window = today + prev 6 days; daily stats always 7 entries ascending, zero-filled. |
 | PATCH | `/api/teachers/me` | Bearer (teacher) | Rich self-PATCH (bio, education, batches, fees, boards, location, etc. — 17 fields). |
 | DELETE | `/api/teachers/me` | Bearer (teacher) | Same as owner. |
 | POST | `/api/teachers/me/password` | Bearer (teacher) | Same as owner. |
