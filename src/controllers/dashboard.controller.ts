@@ -115,7 +115,20 @@ export async function getOwnerDashboard(req: Request, res: Response): Promise<vo
 
   const center = await CoachingCenter.findOne({ owner: req.auth.doc._id }).lean();
   if (!center) {
-    throw new ApiError(404, 'No coaching center found for this owner');
+    // Owner hasn't created a coaching center yet — return an empty dashboard
+    // (zeroed metrics + empty arrays) instead of erroring, so the client can
+    // render a "no center yet" state without special-casing a 404.
+    const empty: OwnerDashboardData = {
+      weeklyProfileViews: 0,
+      weeklyEnquiries: 0,
+      averageRating: 0,
+      totalReviews: 0,
+      activeStudents: 0,
+      profileViewStats: [],
+      recentEnquiries: [],
+    };
+    res.status(200).json({ success: true, data: empty });
+    return;
   }
   const centerId = center._id as Types.ObjectId;
 
