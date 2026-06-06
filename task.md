@@ -596,11 +596,15 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | PATCH | `/api/center-reviews/:id` | Bearer (student) | Author-only edit (sets `isEdited`, recalcs). |
 | DELETE | `/api/center-reviews/:id` | Bearer (student) | Author-only delete (recalcs). 204. |
 | POST | `/api/centers/:id/enquiries` | Bearer (student) | Send an enquiry to a center (`{message, subject?}`). Feeds dashboard `weeklyEnquiries`/`recentEnquiries`. 404 center/subject; response omits `ownerNotes`. 201. |
+| GET | `/api/owners/enquiries` | Bearer (owner) | List enquiries for the owner's center (`?status=&page=&limit=`, student+subject populated). Returns full docs incl. `ownerNotes`. |
+| GET | `/api/owners/enquiries/:id` | Bearer (owner) | Read one enquiry in full. 403 on others', 404 if missing, 400 bad id. |
+| PATCH | `/api/owners/enquiries/:id` | Bearer (owner) | Update `status` (`new`→`contacted`/`closed`) and/or `ownerNotes`. 403 on others'; empty/unknown-key/bad-status body → 400. |
+| GET | `/api/students/enquiries` | Bearer (student) | Caller's sent enquiries (`?status=&page=&limit=`, center+subject populated). `ownerNotes` hidden. |
 | POST | `/api/owners/enrollments` | Bearer (owner) | Enroll a student at the owner's center (`{studentId, subject?, status?}`). 404 student/subject; **409** if already actively enrolled. Feeds dashboard `activeStudents`. 201. |
 | GET | `/api/owners/enrollments` | Bearer (owner) | List the owner's center enrollments (`?status=&page=&limit=`, student+subject populated). |
 | PATCH | `/api/owners/enrollments/:id` | Bearer (owner) | Update status (`active`→`completed`/`cancelled`/`expired`); sets/clears `endedAt`. 403 on others'. |
 
-Endpoints still pending from Phase 2 (courses, owner-side enquiry management, admin center moderation) — see section 11.
+Endpoints still pending from Phase 2 (courses, admin center moderation) — see section 11.
 
 ---
 
@@ -655,7 +659,8 @@ Endpoints still pending from Phase 2 (courses, owner-side enquiry management, ad
 
 ### Owner-dashboard write APIs — follow-ups (core shipped; see section 5)
 - ✅ Profile-view recording, center reviews, enquiry creation, owner-managed enrollments — every dashboard metric is now driven by real API activity.
-- Still pending (deliberately out of scope): **owner-side enquiry management** (`GET /api/owners/enquiries`, `PATCH .../:id` status + `ownerNotes`), student "my enquiries" list, student self-enroll / student "my enrollments", enrollment hard-delete, auto-expiry job for `expired` enrollments.
+- ✅ **Enquiry section completed** — owner-side management (`GET /api/owners/enquiries` list + `?status=`, `GET /api/owners/enquiries/:id` detail, `PATCH /api/owners/enquiries/:id` status + `ownerNotes`) and student "my enquiries" (`GET /api/students/enquiries`, `ownerNotes` hidden). Mirrors the enrollments owner-scoped pattern; `ENQUIRY_STATUSES` now exported from the model and shared with Zod. Verified live: owner list shows `ownerNotes`, foreign detail/patch → 403, bad/missing id → 400/404, empty/unknown-key/bad-status body → 400, student list leaks no `ownerNotes` + `?status=` filter, authz 401/403 on both roles; create + dashboard `recentEnquiries` regress clean. `tsc --noEmit` clean.
+- Still pending (deliberately out of scope): student self-enroll / student "my enrollments", enrollment hard-delete, auto-expiry job for `expired` enrollments.
 - Frontend wiring (e.g. firing `POST /api/centers/:id/views` on the center profile page) — out of scope for this backend repo.
 
 ### Cross-cutting (deferred)

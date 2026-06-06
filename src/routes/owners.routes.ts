@@ -10,6 +10,10 @@ import {
   enrollmentUpdateSchema,
   enrollmentListQuerySchema,
 } from '../schemas/enrollments.schemas.js';
+import {
+  enquiryOwnerUpdateSchema,
+  enquiryOwnerListQuerySchema,
+} from '../schemas/enquiries.schemas.js';
 import { updateMe, deleteMe, changePassword } from '../controllers/owners.controller.js';
 import { getOwnerDashboard } from '../controllers/dashboard.controller.js';
 import {
@@ -17,6 +21,11 @@ import {
   list as listEnrollments,
   update as updateEnrollment,
 } from '../controllers/enrollments.controller.js';
+import {
+  ownerList as listEnquiries,
+  ownerGet as getEnquiry,
+  ownerUpdate as updateEnquiry,
+} from '../controllers/enquiries.controller.js';
 
 const router = Router();
 
@@ -44,6 +53,30 @@ router.patch(
   validate(idParamSchema, 'params'),
   validate(enrollmentUpdateSchema),
   asyncHandler(updateEnrollment),
+);
+
+// Owner-side enquiry management for the calling owner's center.
+router.get(
+  '/enquiries',
+  protect,
+  requireRole('owner'),
+  validate(enquiryOwnerListQuerySchema, 'query'),
+  asyncHandler(listEnquiries),
+);
+router.get(
+  '/enquiries/:id',
+  protect,
+  requireRole('owner'),
+  validate(idParamSchema, 'params'),
+  asyncHandler(getEnquiry),
+);
+router.patch(
+  '/enquiries/:id',
+  protect,
+  requireRole('owner'),
+  validate(idParamSchema, 'params'),
+  validate(enquiryOwnerUpdateSchema),
+  asyncHandler(updateEnquiry),
 );
 
 router.patch(

@@ -6,6 +6,10 @@ import {
   type HydratedDocument,
 } from "mongoose";
 
+// Single source of truth for the enquiry lifecycle — shared by the model enum
+// and the Zod request schemas (mirrors ENROLLMENT_STATUSES on Enrollment).
+export const ENQUIRY_STATUSES = ["new", "contacted", "closed"] as const;
+
 const enquirySchema = new Schema(
   {
     coachingCenter: {
@@ -23,7 +27,7 @@ const enquirySchema = new Schema(
     message: { type: String, required: true, trim: true },
     status: {
       type: String,
-      enum: ["new", "contacted", "closed"],
+      enum: ENQUIRY_STATUSES,
       default: "new",
     },
     ownerNotes: { type: String, trim: true }, // private — only center owner sees

@@ -9,6 +9,7 @@ import {
   bookmarkCreateSchema,
   bookmarkListQuerySchema,
 } from '../schemas/bookmarks.schemas.js';
+import { enquiryStudentListQuerySchema } from '../schemas/enquiries.schemas.js';
 import { updateMe, deleteMe, changePassword } from '../controllers/students.controller.js';
 import { getStudentDashboard } from '../controllers/dashboard.controller.js';
 import {
@@ -16,6 +17,7 @@ import {
   listBookmarks,
   removeBookmark,
 } from '../controllers/bookmarks.controller.js';
+import { studentList as listMyEnquiries } from '../controllers/enquiries.controller.js';
 
 const router = Router();
 
@@ -58,6 +60,15 @@ router.delete(
   requireRole('student'),
   validate(idParamSchema, 'params'),
   asyncHandler(removeBookmark),
+);
+
+// ─── My enquiries ──────────────────────────────────────────────────
+router.get(
+  '/enquiries',
+  protect,
+  requireRole('student'),
+  validate(enquiryStudentListQuerySchema, 'query'),
+  asyncHandler(listMyEnquiries),
 );
 
 export default router;

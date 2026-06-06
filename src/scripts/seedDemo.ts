@@ -302,13 +302,19 @@ async function main(): Promise<void> {
 
     // 11. Enquiries — students → centers --------------------------------------
     const enquiryStatuses = ['new', 'contacted', 'closed'] as const;
-    const enquiryInputs = Array.from({ length: 8 }, (_, i) => ({
-      coachingCenter: centers[i % centers.length]!._id,
-      student: students[i % students.length]!._id,
-      subject: subjects[i % subjects.length]!._id,
-      message: `Hi, I'm interested in your ${centerSeed[i % centerSeed.length]!.subs[0]} batch. Please share details.`,
-      status: enquiryStatuses[i % enquiryStatuses.length],
-    }));
+    const enquiryInputs = Array.from({ length: 8 }, (_, i) => {
+      const status = enquiryStatuses[i % enquiryStatuses.length]!;
+      return {
+        coachingCenter: centers[i % centers.length]!._id,
+        student: students[i % students.length]!._id,
+        subject: subjects[i % subjects.length]!._id,
+        message: `Hi, I'm interested in your ${centerSeed[i % centerSeed.length]!.subs[0]} batch. Please share details.`,
+        status,
+        // Owners have followed up on the non-'new' ones — gives the owner
+        // enquiry list visible ownerNotes in the demo.
+        ...(status === 'new' ? {} : { ownerNotes: `Followed up — marked ${status}.` }),
+      };
+    });
     await Promise.all(enquiryInputs.map((e) => new Enquiry(e).save()));
 
     // 12. Profile views — per-center events across the last 7 days. Day index 1
