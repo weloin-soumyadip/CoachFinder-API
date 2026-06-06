@@ -102,7 +102,10 @@ Coaching-app/
 │   │   ├── admin.routes.ts            # /api/admin/* moderation (+ /subjects writes)
 │   │   └── health.routes.ts           # /api/health
 │   ├── scripts/
-│   │   └── seedAdmin.ts               # bootstrap first admin
+│   │   ├── seedAdmin.ts               # bootstrap first admin
+│   │   ├── seedWebinars.ts            # webinar fixtures (reads existing teachers)
+│   │   ├── seedEnquiries.ts           # enquiry fixtures (reads existing centers/students/subjects; wipes enquiries)
+│   │   └── seedDemo.ts                # full demo dataset (wipes & reseeds all collections)
 │   ├── types/
 │   │   ├── express.d.ts               # Request.auth augmentation
 │   │   └── dashboard.ts               # owner-dashboard response types
@@ -171,6 +174,7 @@ Coaching-app/
 - `clean`        — `rm -rf dist`
 - `seed:admin`   — `tsx src/scripts/seedAdmin.ts`
 - `seed:webinars`— `tsx src/scripts/seedWebinars.ts`
+- `seed:enquiries`— `tsx src/scripts/seedEnquiries.ts` *(wipes enquiries, reseeds 15 varied enquiries across existing centers/students — all 3 statuses, ownerNotes on non-new, spread createdAt dates, keyword-rich messages; exercises every enquiry filter/search field)*
 - `seed:demo`    — `tsx src/scripts/seedDemo.ts` *(full demo dataset — wipe & reseed all collections; every API returns real data)*
 
 ### `src/config/index.ts`
