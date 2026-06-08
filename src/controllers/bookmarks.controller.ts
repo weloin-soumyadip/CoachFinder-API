@@ -3,6 +3,9 @@ import StudentBookmark from '../models/StudentBookmark.js';
 import Teacher from '../models/Teacher.js';
 import Webinar from '../models/Webinar.js';
 import CoachingCenter from '../models/CoachingCenter.js';
+// Side-effect import: registers the Subject schema so the nested target populate
+// (Teacher.subjects / CoachingCenter.subjectsOffered → Subject) resolves.
+import '../models/Subject.js';
 import ApiError from '../utils/ApiError.js';
 import { projectTeacherPublic } from '../lib/crud/projectTeacherPublic.js';
 import { projectCenterPublic } from '../lib/crud/projectCenterPublic.js';
@@ -82,7 +85,16 @@ export async function createBookmark(req: Request, res: Response): Promise<void>
     });
     // Re-read populated so the 201 matches the enriched list shape.
     const populated = await StudentBookmark.findById(doc._id)
-      .populate('target')
+      .populate({
+        path: 'target',
+        populate: [
+          // Polymorphic target: skip the path on models that don't have it
+          // (Webinar/CoachingCenter lack `subjects`; Teacher/Webinar lack
+          // `subjectsOffered`) instead of throwing StrictPopulateError.
+          { path: 'subjects', select: 'name slug', strictPopulate: false }, // Teacher targets
+          { path: 'subjectsOffered', select: 'name slug', strictPopulate: false }, // CoachingCenter targets
+        ],
+      })
       .populate('student', '-__v')
       .lean();
     res
@@ -110,7 +122,16 @@ export async function listBookmarks(req: Request, res: Response): Promise<void> 
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit)
-      .populate('target')
+      .populate({
+        path: 'target',
+        populate: [
+          // Polymorphic target: skip the path on models that don't have it
+          // (Webinar/CoachingCenter lack `subjects`; Teacher/Webinar lack
+          // `subjectsOffered`) instead of throwing StrictPopulateError.
+          { path: 'subjects', select: 'name slug', strictPopulate: false }, // Teacher targets
+          { path: 'subjectsOffered', select: 'name slug', strictPopulate: false }, // CoachingCenter targets
+        ],
+      })
       .populate('student', '-__v')
       .lean(),
     StudentBookmark.countDocuments(filter),
