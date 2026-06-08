@@ -156,5 +156,5 @@ export async function removeBookmark(req: Request, res: Response): Promise<void>
   }
 
   await StudentBookmark.findOneAndDelete({ _id: id });
-  res.status(204).end();
+  res.status(200).json({ success: true, message: 'This bookmark is deleted' });
 }
