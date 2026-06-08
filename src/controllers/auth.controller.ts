@@ -116,7 +116,12 @@ export async function login(req: Request, res: Response): Promise<void> {
 
 export async function refresh(req: Request, res: Response): Promise<void> {
   const cookies = (req as Request & { cookies?: Record<string, string> }).cookies ?? {};
-  const raw = cookies[config.cookie.refreshName];
+  // Accept the refresh token from the request body OR the HttpOnly cookie.
+  // Browser SPAs on a different origin can't reliably persist/send the cookie
+  // (SameSite + no Secure over http), so non-cookie clients send it in the body
+  // (it's already returned to them in the login/refresh response).
+  const bodyToken = (req.body as { refreshToken?: string } | undefined)?.refreshToken;
+  const raw = bodyToken || cookies[config.cookie.refreshName];
   if (!raw) throw new ApiError(401, 'Missing refresh token');
 
   let rotated;
@@ -140,7 +145,8 @@ export async function refresh(req: Request, res: Response): Promise<void> {
 
 export async function logout(req: Request, res: Response): Promise<void> {
   const cookies = (req as Request & { cookies?: Record<string, string> }).cookies ?? {};
-  const raw = cookies[config.cookie.refreshName];
+  const bodyToken = (req.body as { refreshToken?: string } | undefined)?.refreshToken;
+  const raw = bodyToken || cookies[config.cookie.refreshName];
   if (raw) {
     await revokeRefresh(raw);
   }

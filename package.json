@@ -12,7 +12,8 @@
     "seed:admin": "tsx src/scripts/seedAdmin.ts",
     "seed:webinars": "tsx src/scripts/seedWebinars.ts",
     "seed:enquiries": "tsx src/scripts/seedEnquiries.ts",
-    "seed:demo": "tsx src/scripts/seedDemo.ts"
+    "seed:demo": "tsx src/scripts/seedDemo.ts",
+    "seed:test": "tsx src/scripts/seedTestData.ts"
   },
   "keywords": [
     "tuition",
