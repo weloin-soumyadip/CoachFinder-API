@@ -6,15 +6,18 @@ import { ENROLLMENT_STATUSES } from '../models/Enrollment.js';
 export const enrollmentCreateSchema = z
   .object({
     studentId: objectIdSchema,
+    // Optional teacher the student studies under (feeds the teacher dashboard).
+    teacher: objectIdSchema.optional(),
     subject: objectIdSchema.optional(),
     status: z.enum(ENROLLMENT_STATUSES).optional(),
   })
   .strict();
 
-// Update — status transition and/or subject reassignment.
+// Update — status transition and/or subject/teacher reassignment.
 export const enrollmentUpdateSchema = z
   .object({
     status: z.enum(ENROLLMENT_STATUSES).optional(),
+    teacher: objectIdSchema.optional(),
     subject: objectIdSchema.optional(),
   })
   .strict();

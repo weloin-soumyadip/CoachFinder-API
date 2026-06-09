@@ -16,6 +16,8 @@ import StudentBookmark from '../models/StudentBookmark.js';
 import Enquiry from '../models/Enquiry.js';
 import ProfileView from '../models/ProfileView.js';
 import Enrollment from '../models/Enrollment.js';
+import Session from '../models/Session.js';
+import TeacherProfileView from '../models/TeacherProfileView.js';
 
 // Comprehensive demo seeder. Wipes the seeded collections and inserts a fresh,
 // coherent, fully-linked dataset so EVERY API returns real data (auth, profiles,
@@ -67,6 +69,8 @@ async function wipe(): Promise<void> {
     Enquiry.deleteMany({}),
     ProfileView.deleteMany({}),
     Enrollment.deleteMany({}),
+    Session.deleteMany({}),
+    TeacherProfileView.deleteMany({}),
   ]);
 }
 
@@ -349,6 +353,7 @@ async function main(): Promise<void> {
     const enrollmentDocs: Array<{
       coachingCenter: mongoose.Types.ObjectId;
       student: mongoose.Types.ObjectId;
+      teacher: mongoose.Types.ObjectId;
       status: (typeof enrollmentStatuses)[number];
       subject: mongoose.Types.ObjectId;
       enrolledAt: Date;
@@ -357,9 +362,14 @@ async function main(): Promise<void> {
     for (let ci = 0; ci < centers.length; ci++) {
       for (let j = 0; j < enrollmentStatuses.length; j++) {
         const status = enrollmentStatuses[j]!;
+        // Each center's first active enrollment is assigned to teacher #1
+        // (teacher1@demo.com → teachers[0]), so that teacher's dashboard shows a
+        // clear active-student count; the rest spread across the teacher roster.
+        const teacher = j === 0 ? teachers[0]! : teachers[(ci + j) % teachers.length]!;
         enrollmentDocs.push({
           coachingCenter: centers[ci]!._id,
           student: students[(ci + j) % students.length]!._id,
+          teacher: teacher._id,
           status,
           subject: subjects[(ci + j) % subjects.length]!._id,
           enrolledAt: new Date(now - (30 + j) * DAY),
@@ -368,6 +378,114 @@ async function main(): Promise<void> {
       }
     }
     await Enrollment.insertMany(enrollmentDocs);
+
+    // 14. Teacher profile views — per-teacher events over the last 7 days so the
+    // dashboard's total profile-view count is non-zero. Viewers are mostly
+    // students with a few owners (per the "students + owners/admins" rule).
+    const teacherViewDocs: Array<{
+      teacher: mongoose.Types.ObjectId;
+      viewer: mongoose.Types.ObjectId;
+      viewerType: 'Student' | 'Owner';
+      viewedAt: Date;
+    }> = [];
+    for (let ti = 0; ti < teachers.length; ti++) {
+      // teacher #1 gets the most views so its demo dashboard stands out.
+      const baseCount = ti === 0 ? 24 : 8 + ti;
+      for (let k = 0; k < baseCount; k++) {
+        const useOwner = k % 5 === 0;
+        teacherViewDocs.push({
+          teacher: teachers[ti]!._id,
+          viewer: useOwner
+            ? owners[(ti + k) % owners.length]!._id
+            : students[(ti + k) % students.length]!._id,
+          viewerType: useOwner ? 'Owner' : 'Student',
+          viewedAt: new Date(now - (k % 7) * DAY),
+        });
+      }
+    }
+    await TeacherProfileView.insertMany(teacherViewDocs);
+
+    // 15. Sessions — each teacher has classes today (so "today's sessions" > 0),
+    // plus a future and a past one. "today" anchored to UTC noon to stay inside
+    // the dashboard's UTC day window regardless of server clock.
+    const startOfTodayUtc = (() => {
+      const d = new Date(now);
+      return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    })();
+    const todayNoonUtc = startOfTodayUtc + 12 * HOUR;
+    const sessionDocs: Array<{
+      teacher: mongoose.Types.ObjectId;
+      coachingCenter?: mongoose.Types.ObjectId;
+      subject: mongoose.Types.ObjectId;
+      student: mongoose.Types.ObjectId;
+      title: string;
+      scheduledAt: Date;
+      durationMinutes: number;
+      status: 'scheduled' | 'completed' | 'cancelled';
+    }> = [];
+    for (let ti = 0; ti < teachers.length; ti++) {
+      const todayCount = ti === 0 ? 3 : 1 + (ti % 2); // teacher #1 → 3 today
+      const subjIds = teacherSeed[ti]!.subs.map((s) => subj[s]!);
+      for (let s = 0; s < todayCount; s++) {
+        sessionDocs.push({
+          teacher: teachers[ti]!._id,
+          subject: subjIds[s % subjIds.length]!,
+          student: students[(ti + s) % students.length]!._id,
+          title: `${teacherSeed[ti]!.subs[s % teacherSeed[ti]!.subs.length]} class`,
+          scheduledAt: new Date(todayNoonUtc + s * 30 * 60 * 1000),
+          durationMinutes: 60,
+          status: 'scheduled',
+        });
+      }
+      // One upcoming (tomorrow) and one past (yesterday, completed).
+      sessionDocs.push({
+        teacher: teachers[ti]!._id,
+        subject: subjIds[0]!,
+        student: students[ti % students.length]!._id,
+        title: `${teacherSeed[ti]!.subs[0]} class`,
+        scheduledAt: new Date(todayNoonUtc + DAY),
+        durationMinutes: 60,
+        status: 'scheduled',
+      });
+      sessionDocs.push({
+        teacher: teachers[ti]!._id,
+        subject: subjIds[0]!,
+        student: students[ti % students.length]!._id,
+        title: `${teacherSeed[ti]!.subs[0]} class`,
+        scheduledAt: new Date(todayNoonUtc - DAY),
+        durationMinutes: 60,
+        status: 'completed',
+      });
+    }
+    await Session.insertMany(sessionDocs);
+
+    // 16. Teacher-targeted enquiries — students enquire to a teacher directly
+    // (no center). Feeds the teacher dashboard's "recent enquiries". teacher #1
+    // gets several so its demo dashboard list is populated.
+    const teacherEnquiryDocs: Array<{
+      teacher: mongoose.Types.ObjectId;
+      student: mongoose.Types.ObjectId;
+      subject: mongoose.Types.ObjectId;
+      message: string;
+      status: (typeof enquiryStatuses)[number];
+      ownerNotes?: string;
+    }> = [];
+    for (let ti = 0; ti < teachers.length; ti++) {
+      const count = ti === 0 ? 6 : 2;
+      const subjIds = teacherSeed[ti]!.subs.map((s) => subj[s]!);
+      for (let k = 0; k < count; k++) {
+        const status = enquiryStatuses[k % enquiryStatuses.length]!;
+        teacherEnquiryDocs.push({
+          teacher: teachers[ti]!._id,
+          student: students[(ti + k) % students.length]!._id,
+          subject: subjIds[k % subjIds.length]!,
+          message: `Hello, are you taking new students for ${teacherSeed[ti]!.subs[k % teacherSeed[ti]!.subs.length]}? Please share your fees.`,
+          status,
+          ...(status === 'new' ? {} : { ownerNotes: `Replied — marked ${status}.` }),
+        });
+      }
+    }
+    await Enquiry.insertMany(teacherEnquiryDocs);
 
     logger.info(
       {
@@ -380,9 +498,11 @@ async function main(): Promise<void> {
         teacherReviews: teacherReviewCount,
         centerReviews: centerReviewCount,
         bookmarks: bookmarkInputs.length,
-        enquiries: enquiryInputs.length,
+        enquiries: enquiryInputs.length + teacherEnquiryDocs.length,
         profileViews: profileViewDocs.length,
+        teacherProfileViews: teacherViewDocs.length,
         enrollments: enrollmentDocs.length,
+        sessions: sessionDocs.length,
         password: PASSWORD,
       },
       'demo seed complete',

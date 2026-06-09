@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import ApiError from '../utils/ApiError.js';
 import Teacher from '../models/Teacher.js';
+import TeacherProfileView from '../models/TeacherProfileView.js';
 import { issueAccess } from '../lib/auth/jwt.js';
 import { issueNewRefresh, revokeAllForUser } from '../lib/auth/refreshTokens.js';
 import { setRefreshCookie, clearRefreshCookie } from '../lib/auth/cookies.js';
@@ -72,4 +73,29 @@ export async function getPublic(req: Request, res: Response): Promise<void> {
   const doc = await Teacher.findOne({ _id: id, isActive: true });
   if (!doc) throw new ApiError(404, 'Teacher not found');
   res.status(200).json({ teacher: projectTeacherPublic(doc) });
+}
+
+// POST /api/teachers/:id/views — record a view of this teacher's profile.
+// Auth required; students and coaching-center owners/admins may record a view
+// (enforced by requireRole on the route), so the viewer is always attributed.
+// Raw event, no dedupe — the dashboard counts these. Feeds dashboard.profileViews.
+const VIEWER_TYPES = { student: 'Student', owner: 'Owner', admin: 'Admin' } as const;
+
+export async function recordView(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as { id: string };
+
+  const exists = await Teacher.exists({ _id: id, isActive: true });
+  if (!exists) throw new ApiError(404, 'Teacher not found');
+
+  const authType = req.auth?.type;
+  if (authType !== 'student' && authType !== 'owner' && authType !== 'admin') {
+    throw new ApiError(403, 'Only students and owners/admins can record a view');
+  }
+  await TeacherProfileView.create({
+    teacher: id,
+    viewer: req.auth!.doc._id,
+    viewerType: VIEWER_TYPES[authType],
+  });
+
+  res.status(201).json({ success: true });
 }

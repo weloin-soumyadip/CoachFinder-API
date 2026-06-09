@@ -10,7 +10,7 @@
 - Node 22 + Express 5 + Mongoose 9 backend.
 - Originally JavaScript (CommonJS) → migrated to **TypeScript strict mode + ESM** (commit `af7d7ae`).
 - Git repository on branch `dev`; `main` is the integration branch.
-- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews ✅ + center-review routes ✅), 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, CoachingCenter CRUD (2.2) ✅, student search (2.5 partial) ✅, student bookmarks ✅ (enriched response ✅), owner dashboard ✅. **Owner-dashboard write APIs all shipped** ✅ — every dashboard metric is now driven by real API activity: profile-view recording, center reviews, enquiry creation, owner-managed enrollments. Still open: Courses/assignments (2.3), admin center moderation, full search, owner-side enquiry management.
+- Phase 1 (scaffolding) is shipped; Phase 2 is in progress: 2.1 (four-role auth) ✅, 2.1.1 (generic email-conflict) ✅, 2.4 (teacher reviews ✅ + center-review routes ✅), 2.7 (per-role profiles) ✅, Subject CRUD (2.2 partial) ✅, CoachingCenter CRUD (2.2) ✅, student search (2.5 partial) ✅, student bookmarks ✅ (enriched response ✅), owner dashboard ✅. **Owner-dashboard write APIs all shipped** ✅ — every dashboard metric is now driven by real API activity: profile-view recording, center reviews, enquiry creation, owner-managed enrollments. **Teacher dashboard shipped** ✅ — `GET /api/teachers/dashboard` (rating, profile views, total students, today's sessions, recent enquiries), with new `Session` + `TeacherProfileView` models, teacher-linked enrollments/enquiries, and all the write APIs that feed them. Still open: full Courses/TeacherCenterAssignment workflow (2.3), admin center moderation, full search.
 
 ---
 
@@ -35,6 +35,7 @@ Coaching-app/
 │   │   ├── subjects.controller.ts     # public list + GET /api/subjects/:id
 │   │   ├── search.controller.ts       # student search: teachers + centers
 │   │   ├── bookmarks.controller.ts    # student bookmarks: create/list/delete (enriched student+target response)
+│   │   ├── sessions.controller.ts     # teacher-authored sessions CRUD (teacher dashboard "today")
 │   │   └── admin/                     # /api/admin/* moderation surface
 │   │       ├── owners.admin.controller.ts
 │   │       ├── teachers.admin.controller.ts
@@ -50,7 +51,8 @@ Coaching-app/
 │   │   ├── subjects.schemas.ts
 │   │   ├── centers.schemas.ts         # center create/update/list (nested fees/timings/classRange refines)
 │   │   ├── search.schemas.ts          # teacher/center search query schemas (geo pair refine)
-│   │   └── bookmarks.schemas.ts       # bookmark create + list-query (target-type enum)
+│   │   ├── bookmarks.schemas.ts       # bookmark create + list-query (target-type enum)
+│   │   └── sessions.schemas.ts        # session create/update/list (status enum, single-day filter)
 │   ├── lib/
 │   │   ├── auth/
 │   │   │   ├── passwordHook.ts        # bcrypt pre-save + comparePassword
@@ -65,8 +67,9 @@ Coaching-app/
 │   │   │   ├── projectCenterPublic.ts   # public-safe center projection (search results)
 │   │   │   ├── resolveSubjectIds.ts     # subject id-or-name/slug → Subject ObjectIds
 │   │   │   └── escapeRegex.ts         # safe text-search regex escaping
-│   │   ├── dashboard/                 # owner-dashboard aggregation helpers
-│   │   │   └── ownerDashboard.queries.ts # 7-day window + profile-view/enrollment/enquiry pipelines
+│   │   ├── dashboard/                 # dashboard aggregation helpers
+│   │   │   ├── ownerDashboard.queries.ts # 7-day window + profile-view/enrollment/enquiry pipelines
+│   │   │   └── teacherDashboard.queries.ts # today window + profile-view/student/session/enquiry queries
 │   │   ├── logger.ts                  # pino singleton + httpLogger (pino-http)
 │   │   └── redis.ts                   # ioredis singleton + connect/disconnect
 │   ├── middleware/
@@ -82,8 +85,10 @@ Coaching-app/
 │   │   ├── CoachingCenterReview.ts    # student→center rating (was Review.ts; collection pinned 'reviews')
 │   │   ├── StudentBookmark.ts         # polymorphic refPath: student saves Teacher/Webinar/CoachingCenter
 │   │   ├── ProfileView.ts             # per-view event for a CoachingCenter (powers owner dashboard graph)
-│   │   ├── Enrollment.ts              # student↔center link, status active/completed/cancelled/expired
-│   │   ├── Enquiry.ts                 # student ref → 'Student'
+│   │   ├── TeacherProfileView.ts      # per-view event for a Teacher profile (powers teacher dashboard)
+│   │   ├── Session.ts                 # teacher-scheduled class/session (powers teacher dashboard "today")
+│   │   ├── Enrollment.ts              # student↔center link (+optional teacher), status active/completed/cancelled/expired
+│   │   ├── Enquiry.ts                 # student ref → 'Student' (+optional coachingCenter/teacher target)
 │   │   ├── Owner.ts
 │   │   ├── Student.ts
 │   │   ├── Subject.ts
@@ -93,7 +98,7 @@ Coaching-app/
 │   ├── routes/
 │   │   ├── auth.routes.ts             # /api/auth/{register,login,refresh,logout,me}
 │   │   ├── owners.routes.ts           # /api/owners/me (PATCH/DELETE/password)
-│   │   ├── teachers.routes.ts         # /api/teachers/{me, :id}
+│   │   ├── teachers.routes.ts         # /api/teachers/{dashboard, me/sessions, me/students, me/enquiries, :id, :id/views, :id/enquiries}
 │   │   ├── students.routes.ts         # /api/students/me
 │   │   ├── centers.routes.ts          # /api/centers (public reads + owner CRUD)
 │   │   ├── admins.routes.ts           # /api/admins/me
@@ -415,6 +420,27 @@ The owner dashboard (`GET /api/owners/dashboard`) was read-only over four collec
 
 - **Cross-cutting**: all four were verified live in the Docker stack and `tsc --noEmit` is clean.
 
+### Teacher Dashboard — every metric driven by real activity (shipped)
+- **Surface**: `GET /api/teachers/dashboard` (`protect` + `requireRole('teacher')`) — one round-trip returning five metric sections for the **calling teacher**, resolved from `req.auth.doc._id`. **A teacher with no activity yet returns `200` with zeros / empty array** (never a 404), mirroring the owner-dashboard empty-state. Response envelope `{ success, data }`; the documented example shape lives under `data`:
+  ```json
+  { "rating": {"average":4.8,"totalReviews":120}, "profileViews":450,
+    "totalStudents":85, "todaySessions":6, "recentEnquiries":[] }
+  ```
+- **Sections**:
+  - `rating` (`{average, totalReviews}`) — **reused from the denormalised `Teacher` fields** (zero extra query; kept current by the existing `TeacherReview` hooks).
+  - `profileViews` (number) — all-time count of views of the teacher's **own profile** (new `TeacherProfileView` events).
+  - `totalStudents` (number) — **distinct** students with an `Enrollment` of `status:'active'` whose `teacher` = caller (via `$addToSet`).
+  - `todaySessions` (number) — `Session`s with `status:'scheduled'`, `isActive:true`, `scheduledAt` in today's UTC window.
+  - `recentEnquiries` (≤5, newest-first) — `{enquiryId, studentName, phone, message, createdAt, status}` for enquiries addressed to the teacher (`ownerNotes` never exposed).
+- **The data model had no teacher relationships**, so 4 of the 5 metrics had no backing data. This feature builds the minimal links **plus the write APIs that fill them** (same precedent as the owner-dashboard write APIs):
+  - **New `Session` model** (`{teacher, coachingCenter?, subject?, student?, title, scheduledAt, durationMinutes, status('scheduled'|'completed'|'cancelled'), isActive}`; indexes `(teacher, scheduledAt)`, `(teacher, status)`; exports `SESSION_STATUSES`). Teacher-authored CRUD: `POST/GET /api/teachers/me/sessions` (+`?status=&date=` filters), `PATCH /api/teachers/me/sessions/:id` (owner-guarded, 403 on others').
+  - **New `TeacherProfileView` model** (mirrors `ProfileView`; `{teacher, viewerType('Student'|'Owner'|'Admin'), viewer (refPath), viewedAt}`; index `(teacher, viewedAt desc)`). Recorded via `POST /api/teachers/:id/views` — students & coaching-center owners/admins only (anonymous → 401, teacher → 403). 404 if teacher missing/inactive.
+  - **`Enrollment.teacher`** added (optional ref `Teacher`, index `(teacher, status)`). `POST/PATCH /api/owners/enrollments` now accept + validate + populate `teacher`; new `GET /api/teachers/me/students` lists the caller's active students.
+  - **`Enquiry.teacher`** added (optional ref `Teacher`, `coachingCenter` made optional, index `(teacher, status)`). New `POST /api/teachers/:id/enquiries` (student → teacher, no center); teacher-side `GET /api/teachers/me/enquiries` (+`?status=`) and `PATCH /api/teachers/me/enquiries/:id` (status/ownerNotes, owner-guarded). Existing center enquiries unaffected (`teacher` left unset).
+- **Files**: new `src/models/Session.ts`, `src/models/TeacherProfileView.ts`, `src/lib/dashboard/teacherDashboard.queries.ts`, `src/schemas/sessions.schemas.ts`, `src/controllers/sessions.controller.ts`; edited `src/controllers/dashboard.controller.ts` (+`getTeacherDashboard`), `src/controllers/teachers.controller.ts` (+`recordView`), `src/controllers/enrollments.controller.ts` (+`teacher` support +`teacherStudents`), `src/controllers/enquiries.controller.ts` (+`createForTeacher`/`teacherList`/`teacherUpdate`), `src/models/Enrollment.ts` + `src/models/Enquiry.ts` (+`teacher`), `src/schemas/enrollments.schemas.ts` + `src/schemas/enquiries.schemas.ts`, `src/types/dashboard.ts` (+`TeacherDashboardData`/`TeacherRecentEnquiry`), `src/routes/teachers.routes.ts` (all routes; literal `/me/*` + `/dashboard` registered before `/:id`), `src/scripts/seedDemo.ts` (+sessions, teacher profile-views, teacher-linked enrollments/enquiries).
+- **Design notes**: profile views = the teacher's **own** profile (no teacher↔center link exists); sessions = a dedicated `Session` model (not webinars); the `teacher` refs are the minimal links for the dashboard, **not** the full Phase-2.3 invite/assignment system.
+- **Verified end-to-end** (live Docker stack, `teacher1@demo.com`): dashboard returns all 5 sections with real values (`profileViews 24`, `totalStudents 5`, `todaySessions 3`, 5 recent enquiries). Each write path moves its metric: profile-view +2 (student+owner), session-today +1 (future-dated does not), active enroll +1 / complete −1, new teacher enquiry surfaces top of `recentEnquiries`. Authz: no-token 401, student/foreign-teacher 403, teacher-views-own-profile 403, bad/missing id 400/404, `.strict()` 400; empty-state teacher → all zeros/`[]`; `recentEnquiries` + student-facing enquiry responses leak no `ownerNotes`. `tsc --noEmit` clean.
+
 ---
 
 ## 6. Docker setup
@@ -465,8 +491,10 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | `webinars` | Teacher-hosted webinars (new; powers dashboard "upcoming webinars") |
 | `studentbookmarks` | Student-saved Teacher/Webinar/CoachingCenter (new; polymorphic `refPath`) |
 | `profileviews` | Per-view events on a CoachingCenter (new; powers owner-dashboard weekly/daily graph) |
-| `enrollments` | Student↔center links with lifecycle status (new; powers owner-dashboard active-student count) |
-| `enquiries` | Student enquiries to centers (Phase 1, ref flipped to Student) |
+| `enrollments` | Student↔center links with lifecycle status (now also carries optional `teacher` ref → powers teacher-dashboard active-student count) |
+| `enquiries` | Student enquiries to centers **or** teachers (Phase 1; `student` ref; optional `coachingCenter`/`teacher`) |
+| `sessions` | Teacher-scheduled classes/sessions (new; powers teacher-dashboard "today's sessions") |
+| `teacherprofileviews` | Per-view events on a Teacher profile (new; polymorphic viewer Student/Owner/Admin; powers teacher-dashboard profile-view count) |
 
 ### Key indexes
 - `coachingcenters`: `2dsphere` on `location`; text on `name/description/area`; compound on `(city, isActive, isVerified)`; descending on `averageRating`; unique `slug`.
@@ -475,11 +503,14 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 - `teachers`: text on `name/bio/description`; `subjects`; `(feesRange.min, feesRange.max)`; descending `averageRating`; sparse `2dsphere` on `location`; compound on `(city, isActive, isVerified)`.
 - `students`: sparse `2dsphere` on `location`; `city`.
 - `profileviews`: compound `(coachingCenter, viewedAt desc)` for the 7-day window scan.
-- `enrollments`: compound `(coachingCenter, status, student)` (non-unique; history kept, active students de-duped via `$addToSet`).
+- `teacherprofileviews`: compound `(teacher, viewedAt desc)` for the teacher profile-view count.
+- `sessions`: compound `(teacher, scheduledAt)` and `(teacher, status)` for the "today's sessions" scan + listings.
+- `enrollments`: compound `(coachingCenter, status, student)` (non-unique; history kept, active students de-duped via `$addToSet`) + `(teacher, status)` for the teacher-dashboard student count.
+- `enquiries`: `(student)`, `(coachingCenter, status)`, and `(teacher, status)` for the teacher-dashboard recent-enquiries scan.
 - All four role collections: `email` unique-per-collection.
 
 ### Demo data (`npm run seed:demo`)
-- **`src/scripts/seedDemo.ts`** — one command that **wipes** all 13 collections and inserts a fresh, fully-linked demo dataset so **every API returns real data**: 12 subjects, 1 admin, **5 owners** (1:1 with centers so each owner dashboard resolves a center), 8 teachers, 10 students, 5 centers, 10 webinars, 24 teacher reviews, 15 center reviews, 15 bookmarks, 8 enquiries, **350 profile views** (spread across the last 7 days; day 2 left at 0 to prove zero-fill), **30 enrollments** (3 active + completed/cancelled/expired per center).
+- **`src/scripts/seedDemo.ts`** — one command that **wipes** all 15 collections and inserts a fresh, fully-linked demo dataset so **every API returns real data**: 12 subjects, 1 admin, **5 owners** (1:1 with centers so each owner dashboard resolves a center), 8 teachers, 10 students, 5 centers, 10 webinars, 24 teacher reviews, 15 center reviews, 15 bookmarks, **28 enquiries** (8 center + 20 teacher-targeted), **350 center profile views** (spread across the last 7 days; day 2 left at 0 to prove zero-fill), **108 teacher profile views**, **30 enrollments** (3 active + completed/cancelled/expired per center, each carrying a `teacher`), **30 sessions** (each teacher has classes today + future + past; teacher1 has the richest dashboard).
 - Built via `new Model({...}).save()` (fires bcrypt + slug + rating-recalc hooks; sidesteps Mongoose v9's array-`create` typing). Subjects/centers omit `slug` (auto). Reviews created after teachers/centers so denormalised `averageRating`/`totalReviews` populate. Geo uses `[lng,lat]` across Kolkata/Mumbai/Delhi/Bangalore.
 - **All demo accounts share password `Password123`**: `admin@demo.com`, `owner1..4@demo.com`, `teacher1..8@demo.com`, `student1..10@demo.com`.
 - Run inside the Docker app container (so it uses the compose Mongo URI): `docker compose exec app npm run seed:demo`.
@@ -608,7 +639,16 @@ Excludes `node_modules`, `.git`, `.env`, `dist`, `coverage`, IDE folders.
 | GET | `/api/students/enquiries/search` | Bearer (student) | Search caller's own enquiries by `q` (message only), `status`, `subject` (id/name), `dateFrom`/`dateTo`, pagination. `ownerNotes` never exposed. |
 | POST | `/api/owners/enrollments` | Bearer (owner) | Enroll a student at the owner's center (`{studentId, subject?, status?}`). 404 student/subject; **409** if already actively enrolled. Feeds dashboard `activeStudents`. 201. |
 | GET | `/api/owners/enrollments` | Bearer (owner) | List the owner's center enrollments (`?status=&page=&limit=`, student+subject populated). |
-| PATCH | `/api/owners/enrollments/:id` | Bearer (owner) | Update status (`active`→`completed`/`cancelled`/`expired`); sets/clears `endedAt`. 403 on others'. |
+| PATCH | `/api/owners/enrollments/:id` | Bearer (owner) | Update status (`active`→`completed`/`cancelled`/`expired`); sets/clears `endedAt`. 403 on others'. Now also accepts optional `teacher`. |
+| GET | `/api/teachers/dashboard` | Bearer (teacher) | Teacher dashboard. Returns `{success, data:{rating:{average,totalReviews}, profileViews, totalStudents, todaySessions, recentEnquiries[≤5]}}`. Auto-resolves the calling teacher; **no activity → 200 with zeros/`[]`** (not 404). |
+| POST | `/api/teachers/:id/views` | Bearer (student\|owner\|admin) | Record a view of a teacher's profile (feeds dashboard `profileViews`). Anonymous → 401, teacher → 403. Polymorphic `viewer` (`viewerType` Student\|Owner\|Admin). 404 if teacher missing/inactive. 201. |
+| POST | `/api/teachers/me/sessions` | Bearer (teacher) | Schedule a session/class (`{title?, scheduledAt, coachingCenter?, subject?, student?, durationMinutes?, status?}`). 404 subject/student if given. `.strict()`. 201. |
+| GET | `/api/teachers/me/sessions` | Bearer (teacher) | List the teacher's sessions, soonest first (`?status=&date=&page=&limit=`, subject+student populated). |
+| PATCH | `/api/teachers/me/sessions/:id` | Bearer (teacher) | Owner-only edit (reschedule / status). 403 on others'. |
+| GET | `/api/teachers/me/students` | Bearer (teacher) | List the caller's active students (teacher-linked enrollments; `?status=` default active, student+subject populated). |
+| POST | `/api/teachers/:id/enquiries` | Bearer (student) | Send an enquiry to a teacher (`{message, subject?}`). Feeds dashboard `recentEnquiries`. 404 teacher/subject; response omits `ownerNotes`. 201. |
+| GET | `/api/teachers/me/enquiries` | Bearer (teacher) | List enquiries addressed to the teacher (`?status=&page=&limit=`, student+subject populated). Full docs incl. `ownerNotes`. |
+| PATCH | `/api/teachers/me/enquiries/:id` | Bearer (teacher) | Update `status` and/or `ownerNotes`. 403 on others'; empty/unknown-key/bad-status body → 400. |
 
 Endpoints still pending from Phase 2 (courses, admin center moderation) — see section 11.
 
@@ -634,6 +674,7 @@ Endpoints still pending from Phase 2 (courses, admin center moderation) — see 
 - Owner invites teacher by email (auto-resolves on teacher signup via post-save hook)
 - Teacher accept/reject; reverse flow (teacher request join, owner approve)
 - Add `courses` virtual to `CoachingCenter`
+- **Partial precursor shipped via the teacher dashboard**: optional `teacher` refs now exist on `Enrollment` and `Enquiry`, and a `Session` model links teacher↔student↔class. These are the **minimal** links for the teacher dashboard — NOT the full invite/accept assignment workflow above, which is still pending.
 
 ### Phase 2.4 — Reviews (teachers) *(mostly shipped)*
 - ✅ New model: `TeacherReview` with denormalised rating hooks on `Teacher`

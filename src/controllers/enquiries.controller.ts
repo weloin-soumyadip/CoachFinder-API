@@ -3,6 +3,7 @@ import type { Types } from 'mongoose';
 import Enquiry from '../models/Enquiry.js';
 import CoachingCenter from '../models/CoachingCenter.js';
 import Subject from '../models/Subject.js';
+import Teacher from '../models/Teacher.js';
 import ApiError from '../utils/ApiError.js';
 import { escapeRegex } from '../lib/crud/escapeRegex.js';
 import { resolveSubjectIds } from '../lib/crud/resolveSubjectIds.js';
@@ -14,6 +15,8 @@ import type {
   EnquiryStudentListQuery,
   EnquiryOwnerSearchQuery,
   EnquiryStudentSearchQuery,
+  EnquiryTeacherListQuery,
+  EnquiryTeacherUpdate,
 } from '../schemas/enquiries.schemas.js';
 
 function requireStudent(req: Request) {
@@ -26,6 +29,13 @@ function requireStudent(req: Request) {
 function requireOwner(req: Request) {
   if (!req.auth || req.auth.type !== 'owner') {
     throw new ApiError(401, 'Not authenticated as owner');
+  }
+  return req.auth.doc;
+}
+
+function requireTeacher(req: Request) {
+  if (!req.auth || req.auth.type !== 'teacher') {
+    throw new ApiError(401, 'Not authenticated as teacher');
   }
   return req.auth.doc;
 }
@@ -47,10 +57,11 @@ function populatedForOwner(id: Types.ObjectId | string) {
 }
 
 // Public-facing enquiry shape. Allow-list so internal fields never leak —
-// notably `ownerNotes`, which is private to the center owner.
+// notably `ownerNotes`, which is private to the center owner / teacher.
 const PUBLIC_FIELDS = [
   '_id',
   'coachingCenter',
+  'teacher',
   'student',
   'subject',
   'message',
@@ -89,6 +100,86 @@ export async function create(req: Request, res: Response): Promise<void> {
   });
 
   res.status(201).json({ success: true, enquiry: projectEnquiryPublic(doc.toObject()) });
+}
+
+// POST /api/teachers/:id/enquiries — a student sends an enquiry to a teacher.
+// No coaching center — this enquiry is addressed to the teacher directly and
+// feeds the teacher dashboard's "recent enquiries".
+export async function createForTeacher(req: Request, res: Response): Promise<void> {
+  const student = requireStudent(req);
+  const { id: teacherId } = req.params as { id: string };
+  const body = req.body as EnquiryCreate;
+
+  const teacher = await Teacher.exists({ _id: teacherId, isActive: true });
+  if (!teacher) throw new ApiError(404, 'Teacher not found');
+
+  if (body.subject) {
+    const subject = await Subject.exists({ _id: body.subject, isActive: true });
+    if (!subject) throw new ApiError(404, 'Subject not found');
+  }
+
+  const doc = await Enquiry.create({
+    teacher: teacherId,
+    student: student._id,
+    message: body.message,
+    subject: body.subject,
+  });
+
+  res.status(201).json({ success: true, enquiry: projectEnquiryPublic(doc.toObject()) });
+}
+
+// GET /api/teachers/me/enquiries — teacher lists enquiries addressed to them.
+export async function teacherList(req: Request, res: Response): Promise<void> {
+  const teacher = requireTeacher(req);
+  const { page, limit, status } = req.query as unknown as EnquiryTeacherListQuery;
+
+  const filter: Record<string, unknown> = { teacher: teacher._id };
+  if (status) filter.status = status;
+
+  const [data, total] = await Promise.all([
+    Enquiry.find(filter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate('student', 'name phone email')
+      .populate('subject', 'name')
+      .lean(),
+    Enquiry.countDocuments(filter),
+  ]);
+
+  // Teacher-scoped, so the full doc (incl. their ownerNotes) is returned as-is.
+  res.status(200).json({
+    success: true,
+    data,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  });
+}
+
+// PATCH /api/teachers/me/enquiries/:id — teacher updates status and/or notes.
+export async function teacherUpdate(req: Request, res: Response): Promise<void> {
+  const teacher = requireTeacher(req);
+  const { id } = req.params as { id: string };
+  const updates = req.body as EnquiryTeacherUpdate;
+  if (Object.keys(updates).length === 0) {
+    throw new ApiError(400, 'no fields to update');
+  }
+
+  const doc = await Enquiry.findById(id);
+  if (!doc) throw new ApiError(404, 'Enquiry not found');
+  if (String(doc.teacher) !== String(teacher._id)) {
+    throw new ApiError(403, 'Not your enquiry');
+  }
+
+  Object.assign(doc, updates);
+  await doc.save();
+
+  res.status(200).json({
+    success: true,
+    enquiry: await Enquiry.findById(doc._id)
+      .populate('student', 'name phone email')
+      .populate('subject', 'name')
+      .lean(),
+  });
 }
 
 // GET /api/owners/enquiries — owner lists enquiries for their center, newest first.

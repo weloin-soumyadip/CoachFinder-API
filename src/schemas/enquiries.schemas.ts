@@ -22,6 +22,17 @@ export const enquiryOwnerUpdateSchema = z
 
 export type EnquiryOwnerUpdate = z.infer<typeof enquiryOwnerUpdateSchema>;
 
+// Teacher update — same shape as the owner: set status and/or private notes on a
+// teacher-targeted enquiry.
+export const enquiryTeacherUpdateSchema = z
+  .object({
+    status: z.enum(ENQUIRY_STATUSES).optional(),
+    ownerNotes: z.string().trim().max(2000).optional(),
+  })
+  .strict();
+
+export type EnquiryTeacherUpdate = z.infer<typeof enquiryTeacherUpdateSchema>;
+
 // Owner list query — pagination + optional status filter.
 export const enquiryOwnerListQuerySchema = z
   .object({
@@ -31,6 +42,16 @@ export const enquiryOwnerListQuerySchema = z
   .strict();
 
 export type EnquiryOwnerListQuery = z.infer<typeof enquiryOwnerListQuerySchema>;
+
+// Teacher "enquiries for me" list query — same shape as the owner list.
+export const enquiryTeacherListQuerySchema = z
+  .object({
+    ...paginationFields,
+    status: z.enum(ENQUIRY_STATUSES).optional(),
+  })
+  .strict();
+
+export type EnquiryTeacherListQuery = z.infer<typeof enquiryTeacherListQuerySchema>;
 
 // Student "my enquiries" list query — same shape as the owner list.
 export const enquiryStudentListQuerySchema = z

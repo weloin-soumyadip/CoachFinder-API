@@ -21,6 +21,9 @@ const enrollmentSchema = new Schema(
       enum: ENROLLMENT_STATUSES,
       default: 'active',
     },
+    // Optional teacher the student studies under at this center. Powers the
+    // teacher dashboard's "total students" (distinct active students per teacher).
+    teacher: { type: Schema.Types.ObjectId, ref: 'Teacher' },
     subject: { type: Schema.Types.ObjectId, ref: 'Subject' },
     enrolledAt: { type: Date, default: Date.now },
     endedAt: { type: Date },
@@ -31,6 +34,8 @@ const enrollmentSchema = new Schema(
 // Not unique — a student may re-enroll after a prior enrollment ends, so we keep
 // history. The dashboard de-duplicates via $addToSet on student.
 enrollmentSchema.index({ coachingCenter: 1, status: 1, student: 1 });
+// Teacher dashboard "total students" scan.
+enrollmentSchema.index({ teacher: 1, status: 1 });
 
 export type EnrollmentAttrs = InferSchemaType<typeof enrollmentSchema>;
 export type EnrollmentDoc = HydratedDocument<EnrollmentAttrs>;

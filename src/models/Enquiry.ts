@@ -12,11 +12,14 @@ export const ENQUIRY_STATUSES = ["new", "contacted", "closed"] as const;
 
 const enquirySchema = new Schema(
   {
+    // Optional — a center enquiry sets this; a teacher-targeted enquiry does not.
     coachingCenter: {
       type: Schema.Types.ObjectId,
       ref: "CoachingCenter",
-      required: true,
     },
+    // Optional — a teacher-targeted enquiry sets this. Powers the teacher
+    // dashboard's "recent enquiries". A center enquiry leaves it unset.
+    teacher: { type: Schema.Types.ObjectId, ref: "Teacher" },
     // Phase 1 requires login — anonymous enquiries are out of scope.
     student: {
       type: Schema.Types.ObjectId,
@@ -37,6 +40,8 @@ const enquirySchema = new Schema(
 
 enquirySchema.index({ student: 1 });
 enquirySchema.index({ coachingCenter: 1, status: 1 });
+// Teacher dashboard "recent enquiries" scan, newest-first.
+enquirySchema.index({ teacher: 1, status: 1 });
 
 export type EnquiryAttrs = InferSchemaType<typeof enquirySchema>;
 export type EnquiryDoc = HydratedDocument<EnquiryAttrs>;

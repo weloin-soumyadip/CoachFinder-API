@@ -4,6 +4,7 @@ import Enrollment from '../models/Enrollment.js';
 import CoachingCenter from '../models/CoachingCenter.js';
 import Student from '../models/Student.js';
 import Subject from '../models/Subject.js';
+import Teacher from '../models/Teacher.js';
 import ApiError from '../utils/ApiError.js';
 import type {
   EnrollmentCreate,
@@ -23,6 +24,13 @@ function requireOwner(req: Request) {
   return req.auth.doc;
 }
 
+function requireTeacher(req: Request) {
+  if (!req.auth || req.auth.type !== 'teacher') {
+    throw new ApiError(401, 'Not authenticated as teacher');
+  }
+  return req.auth.doc;
+}
+
 // One owner = one center. Resolve it from the token (same as the dashboard).
 async function resolveOwnerCenter(ownerId: Types.ObjectId): Promise<Types.ObjectId> {
   const center = await CoachingCenter.findOne({ owner: ownerId }).select('_id').lean();
@@ -34,6 +42,7 @@ function populated(id: Types.ObjectId | string) {
   return Enrollment.findById(id)
     .populate('student', 'name phone email')
     .populate('subject', 'name')
+    .populate('teacher', 'name profileImage')
     .lean();
 }
 
@@ -51,6 +60,11 @@ export async function create(req: Request, res: Response): Promise<void> {
     if (!subject) throw new ApiError(404, 'Subject not found');
   }
 
+  if (body.teacher) {
+    const teacher = await Teacher.exists({ _id: body.teacher, isActive: true });
+    if (!teacher) throw new ApiError(404, 'Teacher not found');
+  }
+
   const status = body.status ?? 'active';
   if (status === 'active') {
     const existing = await Enrollment.exists({
@@ -64,6 +78,7 @@ export async function create(req: Request, res: Response): Promise<void> {
   const doc = await Enrollment.create({
     coachingCenter: centerId,
     student: body.studentId,
+    teacher: body.teacher,
     subject: body.subject,
     status,
     endedAt: isTerminal(status) ? new Date() : undefined,
@@ -80,6 +95,35 @@ export async function list(req: Request, res: Response): Promise<void> {
 
   const filter: Record<string, unknown> = { coachingCenter: centerId };
   if (status) filter.status = status;
+
+  const [data, total] = await Promise.all([
+    Enrollment.find(filter)
+      .sort({ enrolledAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .populate('student', 'name phone email')
+      .populate('subject', 'name')
+      .populate('teacher', 'name profileImage')
+      .lean(),
+    Enrollment.countDocuments(filter),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data,
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+  });
+}
+
+// GET /api/teachers/me/students — the calling teacher's active students, with
+// the student contact + subject populated. Scoped to enrollments where this
+// teacher is set (backs the dashboard "total students" with a browsable list).
+export async function teacherStudents(req: Request, res: Response): Promise<void> {
+  const teacher = requireTeacher(req);
+  const { page, limit, status } = req.query as unknown as EnrollmentListQuery;
+
+  const filter: Record<string, unknown> = { teacher: teacher._id };
+  filter.status = status ?? 'active';
 
   const [data, total] = await Promise.all([
     Enrollment.find(filter)
@@ -118,6 +162,11 @@ export async function update(req: Request, res: Response): Promise<void> {
   if (updates.subject) {
     const subject = await Subject.exists({ _id: updates.subject, isActive: true });
     if (!subject) throw new ApiError(404, 'Subject not found');
+  }
+
+  if (updates.teacher) {
+    const teacher = await Teacher.exists({ _id: updates.teacher, isActive: true });
+    if (!teacher) throw new ApiError(404, 'Teacher not found');
   }
 
   if (updates.status) {

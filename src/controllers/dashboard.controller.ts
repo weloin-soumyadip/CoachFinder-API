@@ -11,7 +11,14 @@ import {
   getWeeklyEnquiryCount,
   getRecentEnquiries,
 } from '../lib/dashboard/ownerDashboard.queries.js';
-import type { OwnerDashboardData } from '../types/dashboard.js';
+import {
+  getTodayWindow,
+  getTeacherProfileViewCount,
+  getTeacherStudentCount,
+  getTodaySessionCount,
+  getRecentTeacherEnquiries,
+} from '../lib/dashboard/teacherDashboard.queries.js';
+import type { OwnerDashboardData, TeacherDashboardData } from '../types/dashboard.js';
 // Side-effect import: registers the Subject schema so Teacher.populate('subjects')
 // works even though no Subject route is mounted yet (Phase 2.2).
 import '../models/Subject.js';
@@ -148,6 +155,39 @@ export async function getOwnerDashboard(req: Request, res: Response): Promise<vo
     totalReviews: center.totalReviews ?? 0,
     activeStudents,
     profileViewStats: viewSeries.stats,
+    recentEnquiries,
+  };
+
+  res.status(200).json({ success: true, data });
+}
+
+// GET /api/teachers/dashboard — aggregated metrics for the calling teacher.
+// Teacher-only. A teacher with no activity yet returns zeros / empty arrays
+// (never a 404), so the client can render an empty state without special-casing.
+export async function getTeacherDashboard(req: Request, res: Response): Promise<void> {
+  if (req.auth?.type !== 'teacher') {
+    throw new ApiError(401, 'Not authenticated as teacher');
+  }
+  const teacher = req.auth.doc;
+  const teacherId = teacher._id as Types.ObjectId;
+
+  const today = getTodayWindow();
+  const [profileViews, totalStudents, todaySessions, recentEnquiries] = await Promise.all([
+    getTeacherProfileViewCount(teacherId),
+    getTeacherStudentCount(teacherId),
+    getTodaySessionCount(teacherId, today),
+    getRecentTeacherEnquiries(teacherId),
+  ]);
+
+  const data: TeacherDashboardData = {
+    // Rating is already denormalised onto the teacher by the review hooks — reuse it.
+    rating: {
+      average: teacher.averageRating ?? 0,
+      totalReviews: teacher.totalReviews ?? 0,
+    },
+    profileViews,
+    totalStudents,
+    todaySessions,
     recentEnquiries,
   };
 
